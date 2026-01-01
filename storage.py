@@ -59,7 +59,7 @@ class ConsignmentStorage:
     Tracks changes for cloud synchronization support.
     """
 
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2  # Incremented for first_name/last_name change
 
     def __init__(self, db_path: str = "consignment.db"):
         self.db_path = Path(db_path)
@@ -104,7 +104,8 @@ class ConsignmentStorage:
                 -- Consignors
                 CREATE TABLE IF NOT EXISTS consignors (
                     consignor_id TEXT PRIMARY KEY,
-                    name TEXT NOT NULL,
+                    first_name TEXT NOT NULL,
+                    last_name TEXT NOT NULL,
                     street TEXT NOT NULL,
                     city TEXT NOT NULL,
                     state TEXT NOT NULL,
@@ -181,6 +182,7 @@ class ConsignmentStorage:
                 CREATE INDEX IF NOT EXISTS idx_sync_status_items ON items(sync_status);
                 CREATE INDEX IF NOT EXISTS idx_sync_status_sales ON sales(sync_status);
                 CREATE INDEX IF NOT EXISTS idx_sync_status_payouts ON payouts(sync_status);
+                CREATE INDEX IF NOT EXISTS idx_consignors_last_name ON consignors(last_name);
             """)
 
             # Set schema version if not exists
@@ -197,15 +199,10 @@ class ConsignmentStorage:
 
     def save_store_config(self, store: ConsignmentStore):
         """Save store configuration (defaults, counters)."""
-        # Get current counter values by peeking (using a helper attribute we'll add)
-        # We need to track the "next" value that would be generated
         config = {
             'default_split': str(store.default_split),
             'default_stocking_fee': str(store.default_stocking_fee),
         }
-
-        # For counters, we'll track them via the highest IDs in use
-        # This is more robust than trying to serialize itertools.count
 
         now = self._now()
         with self._get_connection() as conn:
@@ -216,7 +213,6 @@ class ConsignmentStorage:
                 """, (key, str(value), now))
 
             # Save counter states based on highest existing IDs
-            # Consignor counter: extract number from highest C#### ID
             consignor_ids = [c.consignor_id for c in store._consignors.values()]
             if consignor_ids:
                 max_consignor = max(int(cid[1:]) for cid in consignor_ids)
@@ -225,7 +221,6 @@ class ConsignmentStorage:
                     VALUES ('consignor_counter', ?, ?, 'pending')
                 """, (str(max_consignor + 1), now))
 
-            # Item counter: extract from I###### IDs
             item_ids = [i.item_id for i in store._items.values()]
             if item_ids:
                 max_item = max(int(iid[1:]) for iid in item_ids)
@@ -234,7 +229,6 @@ class ConsignmentStorage:
                     VALUES ('item_counter', ?, ?, 'pending')
                 """, (str(max_item + 1), now))
 
-            # Payout counter: extract from P###### IDs
             payout_ids = [p.payout_id for p in store._payouts]
             if payout_ids:
                 max_payout = max(int(pid[1:]) for pid in payout_ids)
@@ -256,12 +250,13 @@ class ConsignmentStorage:
         with self._get_connection() as conn:
             conn.execute("""
                 INSERT OR REPLACE INTO consignors 
-                (consignor_id, name, street, city, state, zip_code, phone, email,
+                (consignor_id, first_name, last_name, street, city, state, zip_code, phone, email,
                  split_percent, stocking_fee, balance, created_date, modified_at, sync_status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
             """, (
                 consignor.consignor_id,
-                consignor.name,
+                consignor.first_name,
+                consignor.last_name,
                 consignor.address.street,
                 consignor.address.city,
                 consignor.address.state,
@@ -291,14 +286,15 @@ class ConsignmentStorage:
     def load_all_consignors(self) -> list[Consignor]:
         """Load all consignors."""
         with self._get_connection() as conn:
-            rows = conn.execute("SELECT * FROM consignors").fetchall()
+            rows = conn.execute("SELECT * FROM consignors ORDER BY last_name, first_name").fetchall()
             return [self._row_to_consignor(row) for row in rows]
 
     def _row_to_consignor(self, row: sqlite3.Row) -> Consignor:
         """Convert database row to Consignor object."""
         return Consignor(
             consignor_id=row['consignor_id'],
-            name=row['name'],
+            first_name=row['first_name'],
+            last_name=row['last_name'],
             address=Address(
                 street=row['street'],
                 city=row['city'],
@@ -689,11 +685,11 @@ class ConsignmentStorage:
             for row in data.get('consignors', []):
                 conn.execute("""
                     INSERT OR REPLACE INTO consignors
-                    (consignor_id, name, street, city, state, zip_code, phone, email,
+                    (consignor_id, first_name, last_name, street, city, state, zip_code, phone, email,
                      split_percent, stocking_fee, balance, created_date, modified_at, sync_status)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced')
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced')
                 """, (
-                    row['consignor_id'], row['name'], row['street'], row['city'],
+                    row['consignor_id'], row['first_name'], row['last_name'], row['street'], row['city'],
                     row['state'], row['zip_code'], row.get('phone'), row.get('email'),
                     row['split_percent'], row['stocking_fee'], row['balance'],
                     row['created_date'], now

@@ -218,8 +218,6 @@ class ConsignorsTab(ttk.Frame):
         toolbar.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         
         ttk.Button(toolbar, text="+ Add Consignor", command=self.add_consignor).pack(side="left")
-        ttk.Button(toolbar, text="Edit", command=self.edit_consignor).pack(side="left", padx=(10, 0))
-        ttk.Button(toolbar, text="View Items", command=self.view_items).pack(side="left", padx=(10, 0))
         
         # List
         columns = [
@@ -232,7 +230,7 @@ class ConsignorsTab(ttk.Frame):
         ]
         self.list = ScrollableTreeview(self, columns)
         self.list.grid(row=1, column=0, sticky="nsew")
-        self.list.bind_double_click(lambda e: self.edit_consignor())
+        self.list.bind_double_click(lambda e: self.view_consignor())
     
     def refresh(self):
         """Reload consignor list."""
@@ -240,7 +238,7 @@ class ConsignorsTab(ttk.Frame):
         for c in self.app.store.list_consignors():
             self.list.insert((
                 c.consignor_id,
-                c.name,
+                c.full_name,
                 c.phone or "",
                 f"${c.balance:.2f}",
                 f"{c.split_percent}%",
@@ -253,34 +251,20 @@ class ConsignorsTab(ttk.Frame):
         if dialog.result:
             self.app.save()
             self.refresh()
-            self.app.set_status(f"Added consignor: {dialog.result.name}")
+            self.app.set_status(f"Added consignor: {dialog.result.full_name}")
     
-    def edit_consignor(self):
-        selected = self.list.get_selected()
-        if not selected:
-            messagebox.showwarning("No Selection", "Please select a consignor to edit.")
-            return
-        
-        consignor_id = selected[0]
-        consignor = self.app.store.get_consignor(consignor_id)
-        if consignor:
-            dialog = ConsignorDialog(self, self.app.store, consignor)
-            self.wait_window(dialog)
-            if dialog.result:
-                self.app.save()
-                self.refresh()
-                self.app.set_status(f"Updated consignor: {dialog.result.name}")
-    
-    def view_items(self):
+    def view_consignor(self):
+        """Open consignor detail window."""
         selected = self.list.get_selected()
         if not selected:
             messagebox.showwarning("No Selection", "Please select a consignor.")
             return
         
         consignor_id = selected[0]
-        # Switch to items tab and filter (simplified: just switch)
-        self.app.notebook.select(0)  # Items tab
-        self.app.set_status(f"Showing items for {selected[1]}")
+        consignor = self.app.store.get_consignor(consignor_id)
+        if consignor:
+            # Create a non-modal detail window
+            detail_window = ConsignorDetailWindow(self.app, consignor)
 
 
 class ConsignorDialog(FormDialog):
@@ -292,7 +276,8 @@ class ConsignorDialog(FormDialog):
         self.consignor = consignor
         
         # Variables
-        self.name_var = tk.StringVar(value=consignor.name if consignor else "")
+        self.first_name_var = tk.StringVar(value=consignor.first_name if consignor else "")
+        self.last_name_var = tk.StringVar(value=consignor.last_name if consignor else "")
         self.phone_var = tk.StringVar(value=consignor.phone or "" if consignor else "")
         self.email_var = tk.StringVar(value=consignor.email or "" if consignor else "")
         self.street_var = tk.StringVar(value=consignor.address.street if consignor else "")
@@ -309,29 +294,32 @@ class ConsignorDialog(FormDialog):
             row += 1
         
         # Fields
-        self.name_entry = self.add_field("Name:", self.name_var, row)
-        self.add_field("Phone:", self.phone_var, row + 1)
-        self.add_field("Email:", self.email_var, row + 2)
+        self.first_name_entry = self.add_field("First Name:", self.first_name_var, row, width=20)
+        self.last_name_entry = self.add_field("Last Name:", self.last_name_var, row + 1, width=20)
+        self.add_field("Phone:", self.phone_var, row + 2)
+        self.add_field("Email:", self.email_var, row + 3)
         
-        ttk.Separator(self.form_frame, orient="horizontal").grid(row=row+3, column=0, columnspan=2, sticky="ew", pady=10)
+        ttk.Separator(self.form_frame, orient="horizontal").grid(row=row+4, column=0, columnspan=2, sticky="ew", pady=10)
         
-        self.add_field("Street:", self.street_var, row + 4)
-        self.add_field("City:", self.city_var, row + 5)
-        self.add_field("State:", self.state_var, row + 6, width=5)
-        self.add_field("ZIP:", self.zip_var, row + 7, width=10)
+        self.add_field("Street:", self.street_var, row + 5)
+        self.add_field("City:", self.city_var, row + 6)
+        self.add_field("State:", self.state_var, row + 7, width=5)
+        self.add_field("ZIP:", self.zip_var, row + 8, width=10)
         
-        ttk.Separator(self.form_frame, orient="horizontal").grid(row=row+8, column=0, columnspan=2, sticky="ew", pady=10)
+        ttk.Separator(self.form_frame, orient="horizontal").grid(row=row+9, column=0, columnspan=2, sticky="ew", pady=10)
         
-        self.add_field("Split %:", self.split_var, row + 9, width=8)
-        self.add_field("Stocking Fee $:", self.fee_var, row + 10, width=8)
+        self.add_field("Split %:", self.split_var, row + 10, width=8)
+        self.add_field("Stocking Fee $:", self.fee_var, row + 11, width=8)
         
-        self.name_entry.focus_set()
+        self.first_name_entry.focus_set()
     
     def ok(self):
         # Validate
-        name = self.name_var.get().strip()
-        if not name:
-            messagebox.showerror("Error", "Name is required.")
+        first_name = self.first_name_var.get().strip()
+        last_name = self.last_name_var.get().strip()
+        
+        if not first_name or not last_name:
+            messagebox.showerror("Error", "First and last name are required.")
             return
         
         try:
@@ -350,7 +338,8 @@ class ConsignorDialog(FormDialog):
         
         if self.consignor:
             # Update existing
-            self.consignor.name = name
+            self.consignor.first_name = first_name
+            self.consignor.last_name = last_name
             self.consignor.phone = self.phone_var.get().strip() or None
             self.consignor.email = self.email_var.get().strip() or None
             self.consignor.address = address
@@ -360,7 +349,8 @@ class ConsignorDialog(FormDialog):
         else:
             # Create new
             self.result = self.store.add_consignor(
-                name=name,
+                first_name=first_name,
+                last_name=last_name,
                 address=address,
                 phone=self.phone_var.get().strip() or None,
                 email=self.email_var.get().strip() or None,
@@ -369,6 +359,208 @@ class ConsignorDialog(FormDialog):
             )
         
         self.destroy()
+
+
+class ConsignorDetailWindow(tk.Toplevel):
+    """Detail window showing consignor info and their items."""
+    
+    def __init__(self, app: App, consignor: Consignor):
+        super().__init__(app)
+        self.app = app
+        self.consignor = consignor
+        
+        self.title(f"Consignor: {consignor.full_name}")
+        self.geometry("900x650")
+        
+        # Make it stay on top initially but not modal
+        self.transient(app)
+        
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(2, weight=1)
+        
+        # --- Info Section ---
+        info_frame = ttk.LabelFrame(self, text="Consignor Information", padding="10")
+        info_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
+        
+        # Left column
+        left_frame = ttk.Frame(info_frame)
+        left_frame.grid(row=0, column=0, sticky="w", padx=(0, 30))
+        
+        ttk.Label(left_frame, text="Name:", font=("TkDefaultFont", 9, "bold")).grid(row=0, column=0, sticky="w")
+        ttk.Label(left_frame, text=consignor.full_name).grid(row=0, column=1, sticky="w", padx=(10, 0))
+        
+        ttk.Label(left_frame, text="ID:", font=("TkDefaultFont", 9, "bold")).grid(row=1, column=0, sticky="w", pady=(5, 0))
+        ttk.Label(left_frame, text=consignor.consignor_id).grid(row=1, column=1, sticky="w", padx=(10, 0), pady=(5, 0))
+        
+        # Middle column
+        mid_frame = ttk.Frame(info_frame)
+        mid_frame.grid(row=0, column=1, sticky="w", padx=(0, 30))
+        
+        ttk.Label(mid_frame, text="Phone:", font=("TkDefaultFont", 9, "bold")).grid(row=0, column=0, sticky="w")
+        ttk.Label(mid_frame, text=consignor.phone or "N/A").grid(row=0, column=1, sticky="w", padx=(10, 0))
+        
+        ttk.Label(mid_frame, text="Email:", font=("TkDefaultFont", 9, "bold")).grid(row=1, column=0, sticky="w", pady=(5, 0))
+        ttk.Label(mid_frame, text=consignor.email or "N/A").grid(row=1, column=1, sticky="w", padx=(10, 0), pady=(5, 0))
+        
+        # Right column
+        right_frame = ttk.Frame(info_frame)
+        right_frame.grid(row=0, column=2, sticky="w")
+        
+        ttk.Label(right_frame, text="Balance:", font=("TkDefaultFont", 9, "bold")).grid(row=0, column=0, sticky="w")
+        ttk.Label(right_frame, text=f"${consignor.balance:.2f}", font=("TkDefaultFont", 10)).grid(row=0, column=1, sticky="w", padx=(10, 0))
+        
+        ttk.Label(right_frame, text="Split:", font=("TkDefaultFont", 9, "bold")).grid(row=1, column=0, sticky="w", pady=(5, 0))
+        ttk.Label(right_frame, text=f"{consignor.split_percent}% / ${consignor.stocking_fee:.2f} fee").grid(row=1, column=1, sticky="w", padx=(10, 0), pady=(5, 0))
+        
+        # Edit button
+        ttk.Button(info_frame, text="Edit Info", command=self.edit_consignor).grid(row=0, column=3, sticky="e", padx=(20, 0))
+        
+        # --- Items Section ---
+        items_frame = ttk.LabelFrame(self, text="Items", padding="10")
+        items_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=5)
+        
+        # Toolbar with filter
+        toolbar = ttk.Frame(items_frame)
+        toolbar.pack(fill="x", pady=(0, 10))
+        
+        ttk.Label(toolbar, text="Show:").pack(side="left", padx=(0, 5))
+        self.filter_var = tk.StringVar(value="active")
+        filter_combo = ttk.Combobox(toolbar, textvariable=self.filter_var, state="readonly", width=12)
+        filter_combo["values"] = ("active", "sold", "returned", "expired", "all")
+        filter_combo.pack(side="left")
+        filter_combo.bind("<<ComboboxSelected>>", lambda e: self.refresh_items())
+        
+        # Action buttons
+        ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=10)
+        ttk.Button(toolbar, text="Sell Item", command=self.sell_item).pack(side="left", padx=(0, 5))
+        ttk.Button(toolbar, text="Return Item", command=self.return_item).pack(side="left", padx=(0, 5))
+        
+        # Items list
+        columns = [
+            ("id", "Item ID", 90),
+            ("name", "Name", 200),
+            ("original", "Original $", 90),
+            ("current", "Current $", 90),
+            ("status", "Status", 100),
+            ("entry_date", "Entry Date", 100),
+        ]
+        self.items_list = ScrollableTreeview(items_frame, columns, height=15)
+        self.items_list.pack(fill="both", expand=True)
+        
+        # Configure tag colors
+        self.items_list.tree.tag_configure("expired", background="#ffcccc")
+        self.items_list.tree.tag_configure("expiring", background="#fff3cc")
+        
+        # Refresh items
+        self.refresh_items()
+    
+    def refresh_items(self):
+        """Reload items list for this consignor."""
+        self.items_list.clear()
+        filter_status = self.filter_var.get()
+        
+        # Get items for this consignor, sorted by entry date
+        items = self.app.store.get_items_by_consignor(self.consignor.consignor_id)
+        items.sort(key=lambda x: x.entry_date)
+        
+        for item in items:
+            # Apply filter
+            if filter_status == "active" and item.status != ItemStatus.ACTIVE:
+                continue
+            elif filter_status == "sold" and item.status != ItemStatus.SOLD:
+                continue
+            elif filter_status == "returned" and item.status != ItemStatus.RETURNED:
+                continue
+            elif filter_status == "expired" and item.status != ItemStatus.EXPIRED:
+                continue
+            
+            # Determine row tag
+            tags = ()
+            if item.status == ItemStatus.ACTIVE:
+                if item.is_expired():
+                    tags = ("expired",)
+                elif item.days_since_entry() >= 106:  # Within 2 weeks of expiry
+                    tags = ("expiring",)
+            
+            self.items_list.insert((
+                item.item_id,
+                item.name,
+                f"${item.original_price:.2f}",
+                f"${item.current_price():.2f}",
+                item.price_tier_description(),
+                str(item.entry_date)
+            ), tags=tags)
+        
+        # Update balance display (it may have changed)
+        # We could add a method to update just the balance, but for now this is fine
+    
+    def edit_consignor(self):
+        """Open edit dialog for this consignor."""
+        dialog = ConsignorDialog(self, self.app.store, self.consignor)
+        self.wait_window(dialog)
+        if dialog.result:
+            self.app.save()
+            self.app.refresh_all()
+            # Update window title
+            self.title(f"Consignor: {self.consignor.full_name}")
+            self.app.set_status(f"Updated consignor: {self.consignor.full_name}")
+    
+    def sell_item(self):
+        """Sell selected item."""
+        selected = self.items_list.get_selected()
+        if not selected:
+            messagebox.showwarning("No Selection", "Please select an item to sell.")
+            return
+        
+        item_id = selected[0]
+        item = self.app.store.get_item(item_id)
+        if not item:
+            return
+        
+        if item.status != ItemStatus.ACTIVE:
+            messagebox.showwarning("Cannot Sell", f"Item is {item.status.value}, not active.")
+            return
+        
+        current_price = item.current_price()
+        
+        if messagebox.askyesno("Confirm Sale", 
+            f"Sell '{item.name}' for ${current_price:.2f}?\n\n"
+            f"Consignor: {self.consignor.full_name}\n"
+            f"Discount: {item.price_tier_description()}"
+        ):
+            sale = self.app.store.sell_item(item.item_id)
+            self.app.save()
+            self.refresh_items()
+            self.app.refresh_all()
+            self.app.set_status(
+                f"SOLD: {item.name} for ${sale.sale_price:.2f} "
+                f"(Consignor gets ${sale.consignor_share:.2f})"
+            )
+    
+    def return_item(self):
+        """Return selected item to consignor."""
+        selected = self.items_list.get_selected()
+        if not selected:
+            messagebox.showwarning("No Selection", "Please select an item.")
+            return
+        
+        item_id = selected[0]
+        item = self.app.store.get_item(item_id)
+        if not item:
+            return
+        
+        if item.status != ItemStatus.ACTIVE:
+            messagebox.showwarning("Cannot Return", f"Item is {item.status.value}, not active.")
+            return
+        
+        if messagebox.askyesno("Confirm Return", 
+            f"Return '{item.name}' to consignor?"
+        ):
+            self.app.store.return_item_to_consignor(item.item_id)
+            self.app.save()
+            self.refresh_items()
+            self.app.refresh_all()
+            self.app.set_status(f"Returned to consignor: {item.name}")
 
 
 # --- Items Tab ---
@@ -442,7 +634,7 @@ class ItemsTab(ttk.Frame):
                 continue
             
             consignor = self.app.store.get_consignor(item.consignor_id)
-            consignor_name = consignor.name if consignor else "Unknown"
+            consignor_name = consignor.full_name if consignor else "Unknown"
             
             # Determine row tag
             tags = ()
@@ -530,7 +722,7 @@ class ItemsTab(ttk.Frame):
         
         if messagebox.askyesno("Confirm Sale", 
             f"Sell '{item.name}' for ${current_price:.2f}?\n\n"
-            f"Consignor: {consignor.name}\n"
+            f"Consignor: {consignor.full_name if consignor else 'Unknown'}\n"
             f"Discount: {item.price_tier_description()}"
         ):
             sale = self.app.store.sell_item(item.item_id)
@@ -580,7 +772,7 @@ class ItemDialog(FormDialog):
         # Consignor dropdown
         ttk.Label(self.form_frame, text="Consignor:").grid(row=0, column=0, sticky="e", padx=(0, 10), pady=3)
         self.consignor_combo = ttk.Combobox(self.form_frame, textvariable=self.consignor_var, state="readonly", width=30)
-        self.consignors = {f"{c.consignor_id} - {c.name}": c.consignor_id for c in store.list_consignors()}
+        self.consignors = {f"{c.consignor_id} - {c.full_name}": c.consignor_id for c in store.list_consignors()}
         self.consignor_combo["values"] = list(self.consignors.keys())
         if self.consignors:
             self.consignor_combo.current(0)
@@ -638,7 +830,8 @@ class ItemViewDialog(FormDialog):
         self.add_readonly_field("Item ID:", item.item_id, 0)
         self.add_readonly_field("Name:", item.name, 1)
         self.add_readonly_field("Description:", item.description or "(none)", 2)
-        self.add_readonly_field("Consignor:", f"{consignor.name} ({item.consignor_id})" if consignor else "Unknown", 3)
+        self.add_readonly_field("Consignor:", 
+                                f"{consignor.full_name} ({item.consignor_id})" if consignor else "Unknown", 3)
         
         ttk.Separator(self.form_frame, orient="horizontal").grid(row=4, column=0, columnspan=2, sticky="ew", pady=10)
         
@@ -717,7 +910,7 @@ class SalesTab(ttk.Frame):
                 self.list.insert((
                     item.item_id,
                     item.name,
-                    consignor.name if consignor else "Unknown",
+                    consignor.full_name if consignor else "Unknown",
                     str(sale.sale_date),
                     f"${sale.original_price:.2f}",
                     f"${sale.sale_price:.2f}",
@@ -761,7 +954,7 @@ class SalesTab(ttk.Frame):
         
         if messagebox.askyesno("Confirm Sale",
             f"Sell '{item.name}' for ${current_price:.2f}?\n\n"
-            f"Consignor: {consignor.name if consignor else 'Unknown'}"
+            f"Consignor: {consignor.full_name if consignor else 'Unknown'}"
         ):
             sale = self.app.store.sell_item(item.item_id)
             self.app.save()
@@ -821,7 +1014,7 @@ class PayoutsTab(ttk.Frame):
             if c.balance > 0:
                 self.balance_list.insert((
                     c.consignor_id,
-                    c.name,
+                    c.full_name,
                     f"${c.balance:.2f}"
                 ))
         
@@ -831,7 +1024,7 @@ class PayoutsTab(ttk.Frame):
             consignor = self.app.store.get_consignor(p.consignor_id)
             self.history_list.insert((
                 p.payout_id,
-                consignor.name if consignor else "Unknown",
+                consignor.full_name if consignor else "Unknown",
                 str(p.payout_date),
                 f"${p.amount:.2f}",
                 p.check_number or ""
@@ -852,7 +1045,7 @@ class PayoutsTab(ttk.Frame):
         # Get check number
         check_num = simpledialog.askstring(
             "Check Number",
-            f"Paying ${consignor.balance:.2f} to {consignor.name}\n\nEnter check number (optional):",
+            f"Paying ${consignor.balance:.2f} to {consignor.full_name}\n\nEnter check number (optional):",
             parent=self
         )
         
@@ -863,7 +1056,7 @@ class PayoutsTab(ttk.Frame):
         if payout:
             self.app.save()
             self.refresh()
-            self.app.set_status(f"Payout processed: ${payout.amount:.2f} to {consignor.name}")
+            self.app.set_status(f"Payout processed: ${payout.amount:.2f} to {consignor.full_name}")
 
 
 # --- Main Entry Point ---

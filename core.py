@@ -135,7 +135,8 @@ class Item:
 class Consignor:
     """A consignor (client) who provides items for sale."""
     consignor_id: str
-    name: str
+    first_name: str
+    last_name: str
     address: Address
     split_percent: Decimal  # Consignor's percentage of sale (after stocking fee)
     stocking_fee: Decimal   # Flat fee per item sold
@@ -148,6 +149,16 @@ class Consignor:
         self.split_percent = Decimal(str(self.split_percent))
         self.stocking_fee = Decimal(str(self.stocking_fee))
         self.balance = Decimal(str(self.balance))
+    
+    @property
+    def full_name(self) -> str:
+        """Return formatted name as 'Last, First'."""
+        return f"{self.last_name}, {self.first_name}"
+    
+    @property
+    def display_name(self) -> str:
+        """Alias for full_name for compatibility."""
+        return self.full_name
 
 
 class ConsignmentStore:
@@ -182,7 +193,8 @@ class ConsignmentStore:
 
     def add_consignor(
             self,
-            name: str,
+            first_name: str,
+            last_name: str,
             address: Address,
             split_percent: Optional[Decimal] = None,
             stocking_fee: Optional[Decimal] = None,
@@ -194,7 +206,8 @@ class ConsignmentStore:
 
         consignor = Consignor(
             consignor_id=consignor_id,
-            name=name,
+            first_name=first_name,
+            last_name=last_name,
             address=address,
             split_percent=split_percent if split_percent is not None else self.default_split,
             stocking_fee=stocking_fee if stocking_fee is not None else self.default_stocking_fee,
@@ -228,8 +241,8 @@ class ConsignmentStore:
         return consignor
 
     def list_consignors(self) -> list[Consignor]:
-        """List all consignors."""
-        return list(self._consignors.values())
+        """List all consignors, sorted by last name."""
+        return sorted(self._consignors.values(), key=lambda c: c.last_name.lower())
 
     # --- Item Management ---
 
