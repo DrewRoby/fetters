@@ -58,13 +58,13 @@ class ConsignmentStorage:
     
     Tracks changes for cloud synchronization support.
     """
-    
+
     SCHEMA_VERSION = 1
-    
+
     def __init__(self, db_path: str = "consignment.db"):
         self.db_path = Path(db_path)
         self._init_database()
-    
+
     @contextmanager
     def _get_connection(self):
         """Context manager for database connections."""
@@ -82,7 +82,7 @@ class ConsignmentStorage:
             raise
         finally:
             conn.close()
-    
+
     def _init_database(self):
         """Initialize database schema."""
         with self._get_connection() as conn:
@@ -182,19 +182,19 @@ class ConsignmentStorage:
                 CREATE INDEX IF NOT EXISTS idx_sync_status_sales ON sales(sync_status);
                 CREATE INDEX IF NOT EXISTS idx_sync_status_payouts ON payouts(sync_status);
             """)
-            
+
             # Set schema version if not exists
             conn.execute("""
                 INSERT OR IGNORE INTO schema_info (key, value) 
                 VALUES ('version', ?)
             """, (str(self.SCHEMA_VERSION),))
-    
+
     def _now(self) -> str:
         """Current timestamp for modified_at fields."""
         return datetime.now(timezone.utc).isoformat()
-    
+
     # --- Store Configuration ---
-    
+
     def save_store_config(self, store: ConsignmentStore):
         """Save store configuration (defaults, counters)."""
         # Get current counter values by peeking (using a helper attribute we'll add)
@@ -203,10 +203,10 @@ class ConsignmentStorage:
             'default_split': str(store.default_split),
             'default_stocking_fee': str(store.default_stocking_fee),
         }
-        
+
         # For counters, we'll track them via the highest IDs in use
         # This is more robust than trying to serialize itertools.count
-        
+
         now = self._now()
         with self._get_connection() as conn:
             for key, value in config.items():
@@ -214,7 +214,7 @@ class ConsignmentStorage:
                     INSERT OR REPLACE INTO store_config (key, value, modified_at, sync_status)
                     VALUES (?, ?, ?, 'pending')
                 """, (key, str(value), now))
-            
+
             # Save counter states based on highest existing IDs
             # Consignor counter: extract number from highest C#### ID
             consignor_ids = [c.consignor_id for c in store._consignors.values()]
@@ -224,7 +224,7 @@ class ConsignmentStorage:
                     INSERT OR REPLACE INTO store_config (key, value, modified_at, sync_status)
                     VALUES ('consignor_counter', ?, ?, 'pending')
                 """, (str(max_consignor + 1), now))
-            
+
             # Item counter: extract from I###### IDs
             item_ids = [i.item_id for i in store._items.values()]
             if item_ids:
@@ -233,7 +233,7 @@ class ConsignmentStorage:
                     INSERT OR REPLACE INTO store_config (key, value, modified_at, sync_status)
                     VALUES ('item_counter', ?, ?, 'pending')
                 """, (str(max_item + 1), now))
-            
+
             # Payout counter: extract from P###### IDs
             payout_ids = [p.payout_id for p in store._payouts]
             if payout_ids:
@@ -242,15 +242,15 @@ class ConsignmentStorage:
                     INSERT OR REPLACE INTO store_config (key, value, modified_at, sync_status)
                     VALUES ('payout_counter', ?, ?, 'pending')
                 """, (str(max_payout + 1), now))
-    
+
     def load_store_config(self) -> dict:
         """Load store configuration."""
         with self._get_connection() as conn:
             rows = conn.execute("SELECT key, value FROM store_config").fetchall()
             return {row['key']: row['value'] for row in rows}
-    
+
     # --- Consignor Operations ---
-    
+
     def save_consignor(self, consignor: Consignor):
         """Save or update a consignor."""
         with self._get_connection() as conn:
@@ -274,7 +274,7 @@ class ConsignmentStorage:
                 consignor.created_date,
                 self._now()
             ))
-    
+
     def load_consignor(self, consignor_id: str) -> Optional[Consignor]:
         """Load a consignor by ID."""
         with self._get_connection() as conn:
@@ -282,18 +282,18 @@ class ConsignmentStorage:
                 "SELECT * FROM consignors WHERE consignor_id = ?",
                 (consignor_id,)
             ).fetchone()
-            
+
             if not row:
                 return None
-            
+
             return self._row_to_consignor(row)
-    
+
     def load_all_consignors(self) -> list[Consignor]:
         """Load all consignors."""
         with self._get_connection() as conn:
             rows = conn.execute("SELECT * FROM consignors").fetchall()
             return [self._row_to_consignor(row) for row in rows]
-    
+
     def _row_to_consignor(self, row: sqlite3.Row) -> Consignor:
         """Convert database row to Consignor object."""
         return Consignor(
@@ -310,12 +310,12 @@ class ConsignmentStorage:
             balance=Decimal(row['balance']),
             phone=row['phone'],
             email=row['email'],
-            created_date=row['created_date'] if isinstance(row['created_date'], date) 
-                         else date.fromisoformat(row['created_date'])
+            created_date=row['created_date'] if isinstance(row['created_date'], date)
+            else date.fromisoformat(row['created_date'])
         )
-    
+
     # --- Item Operations ---
-    
+
     def save_item(self, item: Item):
         """Save or update an item."""
         with self._get_connection() as conn:
@@ -335,7 +335,7 @@ class ConsignmentStorage:
                 item.status_date,
                 self._now()
             ))
-            
+
             # Save sale record if present (in same transaction)
             if item.sale_record:
                 sale = item.sale_record
@@ -355,7 +355,7 @@ class ConsignmentStorage:
                     sale.store_share,
                     self._now()
                 ))
-    
+
     def load_item(self, item_id: str) -> Optional[Item]:
         """Load an item by ID."""
         with self._get_connection() as conn:
@@ -363,18 +363,18 @@ class ConsignmentStorage:
                 "SELECT * FROM items WHERE item_id = ?",
                 (item_id,)
             ).fetchone()
-            
+
             if not row:
                 return None
-            
+
             return self._row_to_item(row, conn)
-    
+
     def load_all_items(self) -> list[Item]:
         """Load all items."""
         with self._get_connection() as conn:
             rows = conn.execute("SELECT * FROM items").fetchall()
             return [self._row_to_item(row, conn) for row in rows]
-    
+
     def load_items_by_consignor(self, consignor_id: str) -> list[Item]:
         """Load all items for a consignor."""
         with self._get_connection() as conn:
@@ -383,7 +383,7 @@ class ConsignmentStorage:
                 (consignor_id,)
             ).fetchall()
             return [self._row_to_item(row, conn) for row in rows]
-    
+
     def _row_to_item(self, row: sqlite3.Row, conn: sqlite3.Connection) -> Item:
         """Convert database row to Item object."""
         # Check for sale record
@@ -391,13 +391,13 @@ class ConsignmentStorage:
             "SELECT * FROM sales WHERE item_id = ?",
             (row['item_id'],)
         ).fetchone()
-        
+
         sale_record = None
         if sale_row:
             sale_record = SaleRecord(
                 item_id=sale_row['item_id'],
                 sale_date=sale_row['sale_date'] if isinstance(sale_row['sale_date'], date)
-                          else date.fromisoformat(sale_row['sale_date']),
+                else date.fromisoformat(sale_row['sale_date']),
                 original_price=Decimal(sale_row['original_price']),
                 sale_price=Decimal(sale_row['sale_price']),
                 discount_percent=sale_row['discount_percent'],
@@ -405,15 +405,15 @@ class ConsignmentStorage:
                 consignor_share=Decimal(sale_row['consignor_share']),
                 store_share=Decimal(sale_row['store_share'])
             )
-        
+
         entry_date = row['entry_date']
         if not isinstance(entry_date, date):
             entry_date = date.fromisoformat(entry_date)
-            
+
         status_date = row['status_date']
         if not isinstance(status_date, date):
             status_date = date.fromisoformat(status_date)
-        
+
         return Item(
             item_id=row['item_id'],
             consignor_id=row['consignor_id'],
@@ -425,9 +425,9 @@ class ConsignmentStorage:
             sale_record=sale_record,
             status_date=status_date
         )
-    
+
     # --- Sale Record Operations ---
-    
+
     def save_sale_record(self, sale: SaleRecord):
         """Save a sale record."""
         with self._get_connection() as conn:
@@ -447,9 +447,9 @@ class ConsignmentStorage:
                 sale.store_share,
                 self._now()
             ))
-    
+
     # --- Payout Operations ---
-    
+
     def save_payout(self, payout: Payout):
         """Save a payout record."""
         with self._get_connection() as conn:
@@ -466,13 +466,13 @@ class ConsignmentStorage:
                 payout.check_number,
                 self._now()
             ))
-    
+
     def load_all_payouts(self) -> list[Payout]:
         """Load all payouts."""
         with self._get_connection() as conn:
             rows = conn.execute("SELECT * FROM payouts").fetchall()
             return [self._row_to_payout(row) for row in rows]
-    
+
     def load_payouts_by_consignor(self, consignor_id: str) -> list[Payout]:
         """Load payouts for a consignor."""
         with self._get_connection() as conn:
@@ -481,13 +481,13 @@ class ConsignmentStorage:
                 (consignor_id,)
             ).fetchall()
             return [self._row_to_payout(row) for row in rows]
-    
+
     def _row_to_payout(self, row: sqlite3.Row) -> Payout:
         """Convert database row to Payout object."""
         payout_date = row['payout_date']
         if not isinstance(payout_date, date):
             payout_date = date.fromisoformat(payout_date)
-            
+
         return Payout(
             payout_id=row['payout_id'],
             consignor_id=row['consignor_id'],
@@ -495,34 +495,34 @@ class ConsignmentStorage:
             amount=Decimal(row['amount']),
             check_number=row['check_number']
         )
-    
+
     # --- Full Store Save/Load ---
-    
+
     def save_store(self, store: ConsignmentStore):
         """Save the entire store state to database."""
         self.save_store_config(store)
-        
+
         for consignor in store._consignors.values():
             self.save_consignor(consignor)
-        
+
         for item in store._items.values():
             self.save_item(item)
-        
+
         for payout in store._payouts:
             self.save_payout(payout)
-    
+
     def load_store(self) -> ConsignmentStore:
         """Load full store state from database."""
         import itertools
-        
+
         config = self.load_store_config()
-        
+
         # Create store with saved defaults
         store = ConsignmentStore(
             default_split=Decimal(config.get('default_split', '60.00')),
             default_stocking_fee=Decimal(config.get('default_stocking_fee', '2.00'))
         )
-        
+
         # Restore ID counters
         if 'consignor_counter' in config:
             store._consignor_counter = itertools.count(int(config['consignor_counter']))
@@ -530,20 +530,20 @@ class ConsignmentStorage:
             store._item_counter = itertools.count(int(config['item_counter']))
         if 'payout_counter' in config:
             store._payout_counter = itertools.count(int(config['payout_counter']))
-        
+
         # Load all data
         for consignor in self.load_all_consignors():
             store._consignors[consignor.consignor_id] = consignor
-        
+
         for item in self.load_all_items():
             store._items[item.item_id] = item
-        
+
         store._payouts = self.load_all_payouts()
-        
+
         return store
-    
+
     # --- Sync Support ---
-    
+
     def get_pending_changes(self) -> dict[str, list[dict]]:
         """Get all records with pending sync status."""
         changes = {
@@ -553,45 +553,45 @@ class ConsignmentStorage:
             'sales': [],
             'payouts': []
         }
-        
+
         with self._get_connection() as conn:
             # Config
             rows = conn.execute(
                 "SELECT * FROM store_config WHERE sync_status = 'pending'"
             ).fetchall()
             changes['config'] = [dict(row) for row in rows]
-            
+
             # Consignors
             rows = conn.execute(
                 "SELECT * FROM consignors WHERE sync_status = 'pending'"
             ).fetchall()
             changes['consignors'] = [dict(row) for row in rows]
-            
+
             # Items
             rows = conn.execute(
                 "SELECT * FROM items WHERE sync_status = 'pending'"
             ).fetchall()
             changes['items'] = [dict(row) for row in rows]
-            
+
             # Sales
             rows = conn.execute(
                 "SELECT * FROM sales WHERE sync_status = 'pending'"
             ).fetchall()
             changes['sales'] = [dict(row) for row in rows]
-            
+
             # Payouts
             rows = conn.execute(
                 "SELECT * FROM payouts WHERE sync_status = 'pending'"
             ).fetchall()
             changes['payouts'] = [dict(row) for row in rows]
-        
+
         return changes
-    
+
     def mark_synced(self, table: str, id_column: str, ids: list[str]):
         """Mark records as synced."""
         if not ids:
             return
-            
+
         with self._get_connection() as conn:
             placeholders = ','.join('?' * len(ids))
             conn.execute(f"""
@@ -599,14 +599,14 @@ class ConsignmentStorage:
                 SET sync_status = 'synced' 
                 WHERE {id_column} IN ({placeholders})
             """, ids)
-    
+
     def mark_all_synced(self):
         """Mark all pending records as synced."""
         with self._get_connection() as conn:
             for table in ['store_config', 'consignors', 'items', 'sales', 'payouts']:
                 conn.execute(f"UPDATE {table} SET sync_status = 'synced'")
-    
-    def log_sync(self, sync_type: str, status: str, 
+
+    def log_sync(self, sync_type: str, status: str,
                  records_synced: int = 0, error_message: str = None) -> int:
         """Log a sync operation."""
         with self._get_connection() as conn:
@@ -615,8 +615,8 @@ class ConsignmentStorage:
                 VALUES (?, ?, ?, ?, ?)
             """, (sync_type, self._now(), status, records_synced, error_message))
             return cursor.lastrowid
-    
-    def update_sync_log(self, log_id: int, status: str, 
+
+    def update_sync_log(self, log_id: int, status: str,
                         records_synced: int = None, error_message: str = None):
         """Update a sync log entry."""
         with self._get_connection() as conn:
@@ -632,7 +632,7 @@ class ConsignmentStorage:
                     SET status = ?, completed_at = ?, error_message = ?
                     WHERE id = ?
                 """, (status, self._now(), error_message, log_id))
-    
+
     def get_last_sync(self, sync_type: str = None) -> Optional[dict]:
         """Get the most recent sync log entry."""
         with self._get_connection() as conn:
@@ -648,11 +648,11 @@ class ConsignmentStorage:
                     WHERE status = 'success'
                     ORDER BY completed_at DESC LIMIT 1
                 """).fetchone()
-            
+
             return dict(row) if row else None
-    
+
     # --- Bulk Import (for recovery) ---
-    
+
     def clear_all_data(self):
         """Clear all data (for recovery operations)."""
         with self._get_connection() as conn:
@@ -661,7 +661,7 @@ class ConsignmentStorage:
             conn.execute("DELETE FROM items")
             conn.execute("DELETE FROM consignors")
             conn.execute("DELETE FROM store_config")
-    
+
     def bulk_import(self, data: dict[str, list[dict]]):
         """
         Import bulk data (from cloud recovery).
@@ -676,7 +676,7 @@ class ConsignmentStorage:
         }
         """
         now = self._now()
-        
+
         with self._get_connection() as conn:
             # Config
             for row in data.get('config', []):
@@ -684,7 +684,7 @@ class ConsignmentStorage:
                     INSERT OR REPLACE INTO store_config (key, value, modified_at, sync_status)
                     VALUES (?, ?, ?, 'synced')
                 """, (row['key'], row['value'], now))
-            
+
             # Consignors
             for row in data.get('consignors', []):
                 conn.execute("""
@@ -698,7 +698,7 @@ class ConsignmentStorage:
                     row['split_percent'], row['stocking_fee'], row['balance'],
                     row['created_date'], now
                 ))
-            
+
             # Items
             for row in data.get('items', []):
                 conn.execute("""
@@ -711,7 +711,7 @@ class ConsignmentStorage:
                     row['original_price'], row['entry_date'], row['status'],
                     row['status_date'], now
                 ))
-            
+
             # Sales
             for row in data.get('sales', []):
                 conn.execute("""
@@ -724,7 +724,7 @@ class ConsignmentStorage:
                     row['sale_price'], row['discount_percent'], row['stocking_fee'],
                     row['consignor_share'], row['store_share'], now
                 ))
-            
+
             # Payouts
             for row in data.get('payouts', []):
                 conn.execute("""

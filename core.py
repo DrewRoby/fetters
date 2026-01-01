@@ -153,7 +153,7 @@ class Consignor:
 class ConsignmentStore:
     """
     Main consignment store management system.
-    
+
     Handles consignor accounts, item inventory, sales, and payouts.
     """
 
@@ -296,7 +296,7 @@ class ConsignmentStore:
     ) -> SaleRecord:
         """
         Process the sale of an item.
-        
+
         Calculates split based on the consignor's terms, updates item status,
         and credits the consignor's balance.
         """
@@ -382,7 +382,7 @@ class ConsignmentStore:
     def process_expirations(self, as_of: Optional[date] = None) -> list[Item]:
         """
         Check all active items and mark any that have reached 120 days as expired.
-        
+
         Returns list of newly expired items.
         """
         check_date = as_of or date.today()
@@ -406,7 +406,7 @@ class ConsignmentStore:
     ) -> Optional[Payout]:
         """
         Pay out a consignor's full balance.
-        
+
         Returns None if balance is zero.
         """
         consignor = self._consignors.get(consignor_id)
