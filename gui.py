@@ -15,6 +15,7 @@ from core import (
     ItemStatus, Address, Item, Account, ConsignmentStore
 )
 from storage import ConsignmentStorage
+from categories import CategoryManager
 
 
 class App(tk.Tk):
@@ -30,6 +31,10 @@ class App(tk.Tk):
         # Load or create store
         self.storage = ConsignmentStorage(db_path)
         self.store = self.storage.load_store()
+
+        # Load categories
+        self.category_manager = CategoryManager(db_path)
+        self.categories = self.category_manager.get_all_categories()
         
         # Configure grid
         self.columnconfigure(0, weight=1)
@@ -780,11 +785,12 @@ class ItemsTab(ttk.Frame):
 
 
 class ItemDialog(FormDialog):
-    """Add new item dialog."""
+    """Add new item dialog with category and attributes support."""
     
-    def __init__(self, parent, store: ConsignmentStore, preselect_account_id: str = None):
+    def __init__(self, parent, store: ConsignmentStore, app: App = None, preselect_account_id: str = None):
         super().__init__(parent, "Add Item")
         self.store = store
+        self.app = app
         self.preselect_account_id = preselect_account_id
         
         # Variables
@@ -792,6 +798,11 @@ class ItemDialog(FormDialog):
         self.name_var = tk.StringVar()
         self.desc_var = tk.StringVar()
         self.price_var = tk.StringVar()
+        self.category_var = tk.StringVar()
+        self.print_var = tk.BooleanVar(value=True)
+        
+        # Attribute widgets (will be populated dynamically)
+        self.attribute_widgets: dict[int, tk.Variable] = {}
         
         # Account dropdown
         ttk.Label(self.form_frame, text="Account:").grid(row=0, column=0, sticky="e", padx=(0, 10), pady=3)
@@ -799,7 +810,6 @@ class ItemDialog(FormDialog):
         self.accounts = {f"{c.account_id} - {c.full_name}": c.account_id for c in store.list_accounts()}
         self.account_combo["values"] = list(self.accounts.keys())
         
-        # Pre-select if provided
         if preselect_account_id:
             for key, value in self.accounts.items():
                 if value == preselect_account_id:
@@ -810,11 +820,86 @@ class ItemDialog(FormDialog):
         
         self.account_combo.grid(row=0, column=1, sticky="w", pady=3)
         
+        # Basic fields
         self.name_entry = self.add_field("Item Name:", self.name_var, 1)
         self.add_field("Description:", self.desc_var, 2, width=40)
         self.add_field("Price $:", self.price_var, 3, width=10)
         
+        # Category selection
+        ttk.Label(self.form_frame, text="Category:").grid(row=4, column=0, sticky="e", padx=(0, 10), pady=3)
+        self.category_combo = ttk.Combobox(self.form_frame, textvariable=self.category_var, state="readonly", width=30)
+        
+        if app and hasattr(app, 'categories') and app.categories:
+            category_names = ["(None)"] + [cat.name for cat in app.categories]
+            self.category_combo["values"] = category_names
+            self.category_combo.current(0)
+        
+        self.category_combo.grid(row=4, column=1, sticky="w", pady=3)
+        self.category_combo.bind("<<ComboboxSelected>>", self.on_category_changed)
+        
+        # Frame for dynamic attributes
+        ttk.Separator(self.form_frame, orient="horizontal").grid(row=5, column=0, columnspan=2, sticky="ew", pady=10)
+        
+        self.attributes_frame = ttk.Frame(self.form_frame)
+        self.attributes_frame.grid(row=6, column=0, columnspan=2, sticky="ew")
+        
+        # Print tag checkbox
+        ttk.Checkbutton(self.form_frame, text="Print tag after adding", 
+                        variable=self.print_var).grid(row=7, column=1, sticky="w", pady=(10, 0))
+        
         self.name_entry.focus_set()
+    
+    def on_category_changed(self, event=None):
+        """When category changes, show relevant attribute fields."""
+        # Clear existing attribute widgets
+        for widget in self.attributes_frame.winfo_children():
+            widget.destroy()
+        self.attribute_widgets.clear()
+        
+        category_name = self.category_var.get()
+        if category_name == "(None)" or not category_name:
+            return
+        
+        # Find the category
+        if not self.app or not hasattr(self.app, 'categories'):
+            return
+        
+        category = None
+        for cat in self.app.categories:
+            if cat.name == category_name:
+                category = cat
+                break
+        
+        if not category:
+            return
+        
+        # Get attributes for this category
+        attributes = self.app.category_manager.get_category_attributes(category.category_id)
+        
+        # Create widgets for each attribute
+        for idx, attr in enumerate(attributes):
+            ttk.Label(self.attributes_frame, text=f"{attr.name}:").grid(
+                row=idx, column=0, sticky="e", padx=(0, 10), pady=3
+            )
+            
+            if attr.attribute_type == 'choice' and attr.choices:
+                # Dropdown for choice attributes
+                var = tk.StringVar()
+                combo = ttk.Combobox(
+                    self.attributes_frame, 
+                    textvariable=var, 
+                    values=[""] + attr.choices,  # Empty option first
+                    state="readonly",
+                    width=28
+                )
+                combo.grid(row=idx, column=1, sticky="w", pady=3)
+                self.attribute_widgets[attr.attribute_id] = var
+            else:
+                # Text entry for text/number attributes
+                var = tk.StringVar()
+                entry = ttk.Entry(self.attributes_frame, textvariable=var, width=30)
+                entry.grid(row=idx, column=1, sticky="w", pady=3)
+                self.attribute_widgets[attr.attribute_id] = var
     
     def ok(self):
         name = self.name_var.get().strip()
@@ -826,7 +911,6 @@ class ItemDialog(FormDialog):
             price = Decimal(self.price_var.get())
             if price <= 0:
                 raise ValueError("Price must be positive")
-            # Sanity check: max price of $100,000 (adjust as needed for your store)
             if price > Decimal("100000.00"):
                 messagebox.showerror("Error", "Price cannot exceed $100,000.00")
                 return
@@ -841,53 +925,166 @@ class ItemDialog(FormDialog):
         
         account_id = self.accounts[account_key]
         
+        # Get category ID if selected
+        category_id = None
+        category_name = self.category_var.get()
+        if category_name and category_name != "(None)" and self.app and hasattr(self.app, 'categories'):
+            for cat in self.app.categories:
+                if cat.name == category_name:
+                    category_id = cat.category_id
+                    break
+        
+        # Create the item
         self.result = self.store.add_item(
             account_id=account_id,
             name=name,
             description=self.desc_var.get().strip(),
-            price=price
+            price=price,
+            category_id=category_id
         )
+        
+        # Save attributes if any were filled in
+        if self.attribute_widgets and self.app and hasattr(self.app, 'category_manager'):
+            attributes_to_save = {}
+            for attr_id, var in self.attribute_widgets.items():
+                value = var.get().strip()
+                if value:  # Only save non-empty values
+                    attributes_to_save[attr_id] = value
+            
+            if attributes_to_save:
+                self.app.category_manager.set_item_attributes(
+                    self.result.item_id,
+                    attributes_to_save
+                )
+        
+        # Print tag if requested and we have app reference
+        if self.print_var.get() and self.app and hasattr(self.app, 'printer'):
+            try:
+                result = self.app.printer.print_tag(self.result)
+                if self.app.printer_config.preview_only and result:
+                    import webbrowser
+                    webbrowser.open(f"file://{result}")
+            except Exception as e:
+                messagebox.showwarning("Print Error", f"Item saved, but printing failed: {e}")
         
         self.destroy()
 
-
 class ItemViewDialog(FormDialog):
-    """View item details dialog."""
+    """View item details dialog with category and attributes."""
     
-    def __init__(self, parent, store: ConsignmentStore, item: Item):
+    def __init__(self, parent, store: ConsignmentStore, item: Item, app: App = None):
         super().__init__(parent, f"Item: {item.item_id}")
         self.store = store
         self.item = item
+        self.app = app
         self.changed = False
         
         account = store.get_account(item.account_id)
         
-        # Item info
-        self.add_readonly_field("Item ID:", item.item_id, 0)
-        self.add_readonly_field("Name:", item.name, 1)
-        self.add_readonly_field("Description:", item.description or "(none)", 2)
+        row = 0
+        
+        # Basic item info
+        self.add_readonly_field("Item ID:", item.item_id, row)
+        row += 1
+        self.add_readonly_field("Name:", item.name, row)
+        row += 1
+        self.add_readonly_field("Description:", item.description or "(none)", row)
+        row += 1
+        
+        # Category
+        if item.category_id and app and hasattr(app, 'category_manager'):
+            category = app.category_manager.get_category(item.category_id)
+            if category:
+                self.add_readonly_field("Category:", category.name, row)
+                row += 1
+        
         self.add_readonly_field("Account:", 
-                                f"{account.full_name} ({item.account_id})" if account else "Unknown", 3)
+                                f"{account.full_name} ({item.account_id})" if account else "Unknown", row)
+        row += 1
         
-        ttk.Separator(self.form_frame, orient="horizontal").grid(row=4, column=0, columnspan=2, sticky="ew", pady=10)
+        ttk.Separator(self.form_frame, orient="horizontal").grid(
+            row=row, column=0, columnspan=2, sticky="ew", pady=10
+        )
+        row += 1
         
-        self.add_readonly_field("Original Price:", f"${item.original_price:.2f}", 5)
-        self.add_readonly_field("Current Price:", f"${item.current_price():.2f}", 6)
-        self.add_readonly_field("Status:", item.price_tier_description(), 7)
-        self.add_readonly_field("Entry Date:", str(item.entry_date), 8)
-        self.add_readonly_field("Days in Store:", str(item.days_since_entry()), 9)
+        # Attributes
+        if item.category_id and app and hasattr(app, 'category_manager'):
+            attributes = app.category_manager.get_item_attributes_detailed(item.item_id)
+            if attributes:
+                ttk.Label(self.form_frame, text="Attributes:", 
+                         font=("TkDefaultFont", 9, "bold")).grid(
+                    row=row, column=0, sticky="e", padx=(0, 10), pady=3
+                )
+                row += 1
+                
+                for attr in attributes:
+                    ttk.Label(self.form_frame, text=f"  {attr['name']}:", 
+                             font=("TkDefaultFont", 9)).grid(
+                        row=row, column=0, sticky="e", padx=(0, 10), pady=2
+                    )
+                    ttk.Label(self.form_frame, text=attr['value']).grid(
+                        row=row, column=1, sticky="w", pady=2
+                    )
+                    row += 1
+                
+                ttk.Separator(self.form_frame, orient="horizontal").grid(
+                    row=row, column=0, columnspan=2, sticky="ew", pady=10
+                )
+                row += 1
+        
+        # Pricing info
+        self.add_readonly_field("Original Price:", f"${item.original_price:.2f}", row)
+        row += 1
+        self.add_readonly_field("Current Price:", f"${item.current_price():.2f}", row)
+        row += 1
+        self.add_readonly_field("Status:", item.price_tier_description(), row)
+        row += 1
+        self.add_readonly_field("Entry Date:", str(item.entry_date), row)
+        row += 1
+        self.add_readonly_field("Days in Store:", str(item.days_since_entry()), row)
+        row += 1
         
         # If sold, show sale info
         if item.sale_record:
-            ttk.Separator(self.form_frame, orient="horizontal").grid(row=10, column=0, columnspan=2, sticky="ew", pady=10)
-            self.add_readonly_field("Sale Date:", str(item.sale_record.sale_date), 11)
-            self.add_readonly_field("Sale Price:", f"${item.sale_record.sale_price:.2f}", 12)
-            self.add_readonly_field("Account Share:", f"${item.sale_record.account_share:.2f}", 13)
-            self.add_readonly_field("Store Share:", f"${item.sale_record.store_share:.2f}", 14)
+            ttk.Separator(self.form_frame, orient="horizontal").grid(
+                row=row, column=0, columnspan=2, sticky="ew", pady=10
+            )
+            row += 1
+            self.add_readonly_field("Sale Date:", str(item.sale_record.sale_date), row)
+            row += 1
+            self.add_readonly_field("Sale Price:", f"${item.sale_record.sale_price:.2f}", row)
+            row += 1
+            self.add_readonly_field("Account Share:", f"${item.sale_record.account_share:.2f}", row)
+            row += 1
+            self.add_readonly_field("Store Share:", f"${item.sale_record.store_share:.2f}", row)
+            row += 1
+        
+        # Add Print Tag button if we have app reference and item is active
+        if app and hasattr(app, 'printer') and item.status == ItemStatus.ACTIVE:
+            ttk.Separator(self.form_frame, orient="horizontal").grid(
+                row=row, column=0, columnspan=2, sticky="ew", pady=10
+            )
+            row += 1
+            print_btn = ttk.Button(self.form_frame, text="🖨 Print Tag", command=self.print_tag)
+            print_btn.grid(row=row, column=0, columnspan=2, pady=5)
+    
+    def print_tag(self):
+        """Print a tag for this item."""
+        if not self.app or not hasattr(self.app, 'printer'):
+            return
+        try:
+            result = self.app.printer.print_tag(self.item)
+            if self.app.printer_config.preview_only and result:
+                import webbrowser
+                webbrowser.open(f"file://{result}")
+                messagebox.showinfo("Tag Preview", "Tag preview opened in browser.")
+            else:
+                messagebox.showinfo("Printed", f"Tag printed for: {self.item.name}")
+        except Exception as e:
+            messagebox.showerror("Print Error", f"Failed to print: {e}")
     
     def ok(self):
         self.destroy()
-
 
 # --- Sales Tab ---
 
