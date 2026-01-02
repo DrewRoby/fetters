@@ -15,7 +15,7 @@ from core import (
     ItemStatus, Address, Item, Account, ConsignmentStore
 )
 from storage import ConsignmentStorage
-from categories import CategoryManager
+from categories import CategoryManager, Category, Attribute
 
 
 class App(tk.Tk):
@@ -525,7 +525,7 @@ class AccountDetailWindow(tk.Toplevel):
     
     def add_item(self):
         """Add an item for this account."""
-        dialog = ItemDialog(self, self.app.store, preselect_account_id=self.account.account_id)
+        dialog = ItemDialog(self, self.app.store, app=self.app, preselect_account_id=self.account.account_id)
         self.wait_window(dialog)
         if dialog.result:
             self.app.save()
@@ -619,6 +619,17 @@ class ItemsTab(ttk.Frame):
         filter_combo["values"] = ("active", "sold", "returned", "expired", "all")
         filter_combo.pack(side="left")
         filter_combo.bind("<<ComboboxSelected>>", lambda e: self.refresh())
+
+        ttk.Label(toolbar, text="    Category:").pack(side="left", padx=(20, 5))
+        self.category_filter_var = tk.StringVar(value="all")
+        category_filter = ttk.Combobox(toolbar, textvariable=self.category_filter_var, state="readonly", width=15)
+        
+        # Populate with categories
+        if app.categories:
+            category_options = ["all"] + [cat.name for cat in app.categories]
+            category_filter["values"] = category_options
+            category_filter.pack(side="left")
+            category_filter.bind("<<ComboboxSelected>>", lambda e: self.refresh())
         
         # Item ID quick lookup (good for barcode scanners)
         ttk.Label(toolbar, text="    Item ID:").pack(side="left", padx=(20, 5))
@@ -649,6 +660,7 @@ class ItemsTab(ttk.Frame):
         """Reload item list."""
         self.list.clear()
         filter_status = self.filter_var.get()
+        filter_category = self.category_filter_var.get() if hasattr(self, 'category_filter_var') else "all"
         
         for item in self.app.store._items.values():
             # Apply filter
@@ -661,6 +673,12 @@ class ItemsTab(ttk.Frame):
             elif filter_status == "expired" and item.status != ItemStatus.EXPIRED:
                 continue
             
+            if filter_category != "all":
+                if item.category_id is None:
+                    continue
+                category = self.app.category_manager.get_category(item.category_id)
+                if not category or category.name != filter_category:
+                    continue           
             account = self.app.store.get_account(item.account_id)
             account_name = account.full_name if account else "Unknown"
             
@@ -705,7 +723,7 @@ class ItemsTab(ttk.Frame):
             messagebox.showwarning("No Accounts", "Please add an account first.")
             return
         
-        dialog = ItemDialog(self, self.app.store)
+        dialog = ItemDialog(self, self.app.store, app=self.app)
         self.wait_window(dialog)
         if dialog.result:
             self.app.save()
@@ -724,7 +742,7 @@ class ItemsTab(ttk.Frame):
     
     def view_item_dialog(self, item: Item):
         """Show item detail dialog."""
-        dialog = ItemViewDialog(self, self.app.store, item)
+        dialog = ItemViewDialog(self, self.app.store, item, app=self.app)
         self.wait_window(dialog)
         if dialog.changed:
             self.app.save()
@@ -829,7 +847,7 @@ class ItemDialog(FormDialog):
         ttk.Label(self.form_frame, text="Category:").grid(row=4, column=0, sticky="e", padx=(0, 10), pady=3)
         self.category_combo = ttk.Combobox(self.form_frame, textvariable=self.category_var, state="readonly", width=30)
         
-        if app and hasattr(app, 'categories') and app.categories:
+        if app and app.categories:
             category_names = ["(None)"] + [cat.name for cat in app.categories]
             self.category_combo["values"] = category_names
             self.category_combo.current(0)
@@ -861,7 +879,7 @@ class ItemDialog(FormDialog):
             return
         
         # Find the category
-        if not self.app or not hasattr(self.app, 'categories'):
+        if not self.app:
             return
         
         category = None
@@ -928,7 +946,7 @@ class ItemDialog(FormDialog):
         # Get category ID if selected
         category_id = None
         category_name = self.category_var.get()
-        if category_name and category_name != "(None)" and self.app and hasattr(self.app, 'categories'):
+        if category_name and category_name != "(None)" and self.app:
             for cat in self.app.categories:
                 if cat.name == category_name:
                     category_id = cat.category_id
@@ -944,7 +962,7 @@ class ItemDialog(FormDialog):
         )
         
         # Save attributes if any were filled in
-        if self.attribute_widgets and self.app and hasattr(self.app, 'category_manager'):
+        if self.attribute_widgets and self.app:
             attributes_to_save = {}
             for attr_id, var in self.attribute_widgets.items():
                 value = var.get().strip()
@@ -958,7 +976,7 @@ class ItemDialog(FormDialog):
                 )
         
         # Print tag if requested and we have app reference
-        if self.print_var.get() and self.app and hasattr(self.app, 'printer'):
+        if self.print_var.get() and self.app:
             try:
                 result = self.app.printer.print_tag(self.result)
                 if self.app.printer_config.preview_only and result:
@@ -992,7 +1010,7 @@ class ItemViewDialog(FormDialog):
         row += 1
         
         # Category
-        if item.category_id and app and hasattr(app, 'category_manager'):
+        if item.category_id and app:
             category = app.category_manager.get_category(item.category_id)
             if category:
                 self.add_readonly_field("Category:", category.name, row)
@@ -1008,7 +1026,7 @@ class ItemViewDialog(FormDialog):
         row += 1
         
         # Attributes
-        if item.category_id and app and hasattr(app, 'category_manager'):
+        if item.category_id and app:
             attributes = app.category_manager.get_item_attributes_detailed(item.item_id)
             if attributes:
                 ttk.Label(self.form_frame, text="Attributes:", 
@@ -1060,7 +1078,7 @@ class ItemViewDialog(FormDialog):
             row += 1
         
         # Add Print Tag button if we have app reference and item is active
-        if app and hasattr(app, 'printer') and item.status == ItemStatus.ACTIVE:
+        if app and item.status == ItemStatus.ACTIVE:
             ttk.Separator(self.form_frame, orient="horizontal").grid(
                 row=row, column=0, columnspan=2, sticky="ew", pady=10
             )
@@ -1070,18 +1088,19 @@ class ItemViewDialog(FormDialog):
     
     def print_tag(self):
         """Print a tag for this item."""
-        if not self.app or not hasattr(self.app, 'printer'):
-            return
-        try:
-            result = self.app.printer.print_tag(self.item)
-            if self.app.printer_config.preview_only and result:
-                import webbrowser
-                webbrowser.open(f"file://{result}")
-                messagebox.showinfo("Tag Preview", "Tag preview opened in browser.")
-            else:
-                messagebox.showinfo("Printed", f"Tag printed for: {self.item.name}")
-        except Exception as e:
-            messagebox.showerror("Print Error", f"Failed to print: {e}")
+        pass #not printing for now
+        # if not self.app:
+        #     return
+        # try:
+        #     result = self.app.printer.print_tag(self.item)
+        #     if self.app.printer_config.preview_only and result:
+        #         import webbrowser
+        #         webbrowser.open(f"file://{result}")
+        #         messagebox.showinfo("Tag Preview", "Tag preview opened in browser.")
+        #     else:
+        #         messagebox.showinfo("Printed", f"Tag printed for: {self.item.name}")
+        # except Exception as e:
+        #     messagebox.showerror("Print Error", f"Failed to print: {e}")
     
     def ok(self):
         self.destroy()

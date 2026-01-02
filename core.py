@@ -1,5 +1,5 @@
 """
-Core consignment system module.
+Core consignment system module - Updated with category support.
 
 Handles items, accounts, sales transactions, and payouts for a
 consignment store operation.
@@ -69,7 +69,7 @@ class Payout:
 
 @dataclass
 class Item:
-    """A consignment item with automatic discount scheduling."""
+    """A consignment item with automatic discount scheduling and optional category."""
     item_id: str
     account_id: str
     name: str
@@ -79,6 +79,7 @@ class Item:
     status: ItemStatus = ItemStatus.ACTIVE
     sale_record: Optional[SaleRecord] = None
     status_date: date = field(default_factory=date.today)  # When status last changed
+    category_id: Optional[int] = None  # Optional category for item
 
     # Discount schedule: (days_threshold, discount_percentage)
     DISCOUNT_SCHEDULE = [
@@ -256,7 +257,8 @@ class ConsignmentStore:
             name: str,
             description: str,
             price: Decimal,
-            entry_date: Optional[date] = None
+            entry_date: Optional[date] = None,
+            category_id: Optional[int] = None
     ) -> Item:
         """Add a new item to consignment inventory."""
         if account_id not in self._accounts:
@@ -270,7 +272,8 @@ class ConsignmentStore:
             name=name,
             description=description,
             original_price=Decimal(str(price)),
-            entry_date=entry_date or date.today()
+            entry_date=entry_date or date.today(),
+            category_id=category_id
         )
 
         self._items[item_id] = item

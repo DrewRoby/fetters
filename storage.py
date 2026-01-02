@@ -365,8 +365,8 @@ class ConsignmentStorage:
             conn.execute("""
                 INSERT OR REPLACE INTO items
                 (item_id, account_id, name, description, original_price,
-                 entry_date, status, status_date, modified_at, sync_status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+                 entry_date, status, status_date, category_id, modified_at, sync_status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
             """, (
                 item.item_id,
                 item.account_id,
@@ -376,6 +376,7 @@ class ConsignmentStorage:
                 item.entry_date,
                 item.status.value,
                 item.status_date,
+                item.category_id,
                 self._now()
             ))
 
@@ -466,7 +467,8 @@ class ConsignmentStorage:
             entry_date=entry_date,
             status=ItemStatus(row['status']),
             sale_record=sale_record,
-            status_date=status_date
+            status_date=status_date,
+            category_id=row['category_id']
         )
 
     # --- Sale Record Operations ---
