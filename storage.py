@@ -7,13 +7,13 @@ Provides local storage with change tracking to support cloud synchronization.
 import sqlite3
 import json
 from datetime import datetime, date, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Optional, Any
 from contextlib import contextmanager
 
 from core import (
-    ItemStatus, Address, SaleRecord, Payout, Item, Consignor, ConsignmentStore
+    ItemStatus, Address, SaleRecord, Payout, Item, Account, ConsignmentStore
 )
 
 
@@ -45,6 +45,49 @@ def convert_date(s: bytes) -> date:
     return date.fromisoformat(s.decode('utf-8'))
 
 
+def safe_decimal(value: Any, default: Decimal = Decimal("0.00")) -> Decimal:
+    """
+    Safely convert a value to Decimal, handling scientific notation and errors.
+    
+    Args:
+        value: Value to convert (can be str, bytes, float, int, Decimal)
+        default: Default value if conversion fails
+    
+    Returns:
+        Decimal value or default
+    """
+    try:
+        if isinstance(value, bytes):
+            value = value.decode('utf-8')
+        
+        # Convert to string first to handle scientific notation
+        value_str = str(value)
+        
+        # Check for scientific notation (e.g., "1e+42")
+        if 'e' in value_str.lower():
+            # Try to convert through float first, then to Decimal
+            # This handles scientific notation properly
+            try:
+                float_val = float(value_str)
+                # Sanity check - if it's absurdly large, use default
+                if abs(float_val) > 1e10:  # $10 billion seems like a reasonable max
+                    return default
+                return Decimal(str(float_val))
+            except (ValueError, InvalidOperation):
+                return default
+        
+        # Normal decimal conversion
+        result = Decimal(value_str)
+        
+        # Additional sanity check
+        if abs(result) > Decimal("10000000000"):  # $10 billion
+            return default
+            
+        return result
+    except (InvalidOperation, ValueError, TypeError):
+        return default
+
+
 # Register adapters and converters
 sqlite3.register_adapter(Decimal, adapt_decimal)
 sqlite3.register_converter("DECIMAL", convert_decimal)
@@ -59,7 +102,7 @@ class ConsignmentStorage:
     Tracks changes for cloud synchronization support.
     """
 
-    SCHEMA_VERSION = 2  # Incremented for first_name/last_name change
+    SCHEMA_VERSION = 3  # Incremented for Account rename and account_type addition
 
     def __init__(self, db_path: str = "consignment.db"):
         self.db_path = Path(db_path)
@@ -101,11 +144,12 @@ class ConsignmentStorage:
                     sync_status TEXT DEFAULT 'pending'
                 );
                 
-                -- Consignors
-                CREATE TABLE IF NOT EXISTS consignors (
-                    consignor_id TEXT PRIMARY KEY,
+                -- Accounts (formerly consignors)
+                CREATE TABLE IF NOT EXISTS accounts (
+                    account_id TEXT PRIMARY KEY,
                     first_name TEXT NOT NULL,
                     last_name TEXT NOT NULL,
+                    account_type TEXT NOT NULL DEFAULT 'consignment',
                     street TEXT NOT NULL,
                     city TEXT NOT NULL,
                     state TEXT NOT NULL,
@@ -123,7 +167,7 @@ class ConsignmentStorage:
                 -- Items
                 CREATE TABLE IF NOT EXISTS items (
                     item_id TEXT PRIMARY KEY,
-                    consignor_id TEXT NOT NULL,
+                    account_id TEXT NOT NULL,
                     name TEXT NOT NULL,
                     description TEXT NOT NULL,
                     original_price DECIMAL NOT NULL,
@@ -132,7 +176,7 @@ class ConsignmentStorage:
                     status_date DATE NOT NULL,
                     modified_at TEXT NOT NULL,
                     sync_status TEXT DEFAULT 'pending',
-                    FOREIGN KEY (consignor_id) REFERENCES consignors(consignor_id)
+                    FOREIGN KEY (account_id) REFERENCES accounts(account_id)
                 );
                 
                 -- Sale records (linked to items)
@@ -143,7 +187,7 @@ class ConsignmentStorage:
                     sale_price DECIMAL NOT NULL,
                     discount_percent INTEGER NOT NULL,
                     stocking_fee DECIMAL NOT NULL,
-                    consignor_share DECIMAL NOT NULL,
+                    account_share DECIMAL NOT NULL,
                     store_share DECIMAL NOT NULL,
                     modified_at TEXT NOT NULL,
                     sync_status TEXT DEFAULT 'pending',
@@ -153,13 +197,13 @@ class ConsignmentStorage:
                 -- Payouts
                 CREATE TABLE IF NOT EXISTS payouts (
                     payout_id TEXT PRIMARY KEY,
-                    consignor_id TEXT NOT NULL,
+                    account_id TEXT NOT NULL,
                     payout_date DATE NOT NULL,
                     amount DECIMAL NOT NULL,
                     check_number TEXT,
                     modified_at TEXT NOT NULL,
                     sync_status TEXT DEFAULT 'pending',
-                    FOREIGN KEY (consignor_id) REFERENCES consignors(consignor_id)
+                    FOREIGN KEY (account_id) REFERENCES accounts(account_id)
                 );
                 
                 -- Sync metadata
@@ -174,15 +218,16 @@ class ConsignmentStorage:
                 );
                 
                 -- Indexes for common queries
-                CREATE INDEX IF NOT EXISTS idx_items_consignor ON items(consignor_id);
+                CREATE INDEX IF NOT EXISTS idx_items_account ON items(account_id);
                 CREATE INDEX IF NOT EXISTS idx_items_status ON items(status);
                 CREATE INDEX IF NOT EXISTS idx_items_entry_date ON items(entry_date);
-                CREATE INDEX IF NOT EXISTS idx_payouts_consignor ON payouts(consignor_id);
-                CREATE INDEX IF NOT EXISTS idx_sync_status_consignors ON consignors(sync_status);
+                CREATE INDEX IF NOT EXISTS idx_payouts_account ON payouts(account_id);
+                CREATE INDEX IF NOT EXISTS idx_sync_status_accounts ON accounts(sync_status);
                 CREATE INDEX IF NOT EXISTS idx_sync_status_items ON items(sync_status);
                 CREATE INDEX IF NOT EXISTS idx_sync_status_sales ON sales(sync_status);
                 CREATE INDEX IF NOT EXISTS idx_sync_status_payouts ON payouts(sync_status);
-                CREATE INDEX IF NOT EXISTS idx_consignors_last_name ON consignors(last_name);
+                CREATE INDEX IF NOT EXISTS idx_accounts_last_name ON accounts(last_name);
+                CREATE INDEX IF NOT EXISTS idx_accounts_type ON accounts(account_type);
             """)
 
             # Set schema version if not exists
@@ -213,13 +258,13 @@ class ConsignmentStorage:
                 """, (key, str(value), now))
 
             # Save counter states based on highest existing IDs
-            consignor_ids = [c.consignor_id for c in store._consignors.values()]
-            if consignor_ids:
-                max_consignor = max(int(cid[1:]) for cid in consignor_ids)
+            account_ids = [c.account_id for c in store._accounts.values()]
+            if account_ids:
+                max_account = max(int(cid[1:]) for cid in account_ids)
                 conn.execute("""
                     INSERT OR REPLACE INTO store_config (key, value, modified_at, sync_status)
-                    VALUES ('consignor_counter', ?, ?, 'pending')
-                """, (str(max_consignor + 1), now))
+                    VALUES ('account_counter', ?, ?, 'pending')
+                """, (str(max_account + 1), now))
 
             item_ids = [i.item_id for i in store._items.values()]
             if item_ids:
@@ -243,67 +288,69 @@ class ConsignmentStorage:
             rows = conn.execute("SELECT key, value FROM store_config").fetchall()
             return {row['key']: row['value'] for row in rows}
 
-    # --- Consignor Operations ---
+    # --- Account Operations ---
 
-    def save_consignor(self, consignor: Consignor):
-        """Save or update a consignor."""
+    def save_account(self, account: Account):
+        """Save or update an account."""
         with self._get_connection() as conn:
             conn.execute("""
-                INSERT OR REPLACE INTO consignors 
-                (consignor_id, first_name, last_name, street, city, state, zip_code, phone, email,
+                INSERT OR REPLACE INTO accounts 
+                (account_id, first_name, last_name, account_type, street, city, state, zip_code, phone, email,
                  split_percent, stocking_fee, balance, created_date, modified_at, sync_status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
             """, (
-                consignor.consignor_id,
-                consignor.first_name,
-                consignor.last_name,
-                consignor.address.street,
-                consignor.address.city,
-                consignor.address.state,
-                consignor.address.zip_code,
-                consignor.phone,
-                consignor.email,
-                consignor.split_percent,
-                consignor.stocking_fee,
-                consignor.balance,
-                consignor.created_date,
+                account.account_id,
+                account.first_name,
+                account.last_name,
+                account.account_type,
+                account.address.street,
+                account.address.city,
+                account.address.state,
+                account.address.zip_code,
+                account.phone,
+                account.email,
+                account.split_percent,
+                account.stocking_fee,
+                account.balance,
+                account.created_date,
                 self._now()
             ))
 
-    def load_consignor(self, consignor_id: str) -> Optional[Consignor]:
-        """Load a consignor by ID."""
+    def load_account(self, account_id: str) -> Optional[Account]:
+        """Load an account by ID."""
         with self._get_connection() as conn:
             row = conn.execute(
-                "SELECT * FROM consignors WHERE consignor_id = ?",
-                (consignor_id,)
+                "SELECT * FROM accounts WHERE account_id = ?",
+                (account_id,)
             ).fetchone()
 
             if not row:
                 return None
 
-            return self._row_to_consignor(row)
+            return self._row_to_account(row)
 
-    def load_all_consignors(self) -> list[Consignor]:
-        """Load all consignors."""
+    def load_all_accounts(self) -> list[Account]:
+        """Load all accounts."""
         with self._get_connection() as conn:
-            rows = conn.execute("SELECT * FROM consignors ORDER BY last_name, first_name").fetchall()
-            return [self._row_to_consignor(row) for row in rows]
+            rows = conn.execute("SELECT * FROM accounts ORDER BY last_name, first_name").fetchall()
+            return [self._row_to_account(row) for row in rows]
 
-    def _row_to_consignor(self, row: sqlite3.Row) -> Consignor:
-        """Convert database row to Consignor object."""
-        return Consignor(
-            consignor_id=row['consignor_id'],
+    def _row_to_account(self, row: sqlite3.Row) -> Account:
+        """Convert database row to Account object."""
+        return Account(
+            account_id=row['account_id'],
             first_name=row['first_name'],
             last_name=row['last_name'],
+            account_type=row['account_type'],
             address=Address(
                 street=row['street'],
                 city=row['city'],
                 state=row['state'],
                 zip_code=row['zip_code']
             ),
-            split_percent=Decimal(row['split_percent']),
-            stocking_fee=Decimal(row['stocking_fee']),
-            balance=Decimal(row['balance']),
+            split_percent=safe_decimal(row['split_percent']),
+            stocking_fee=safe_decimal(row['stocking_fee']),
+            balance=safe_decimal(row['balance']),
             phone=row['phone'],
             email=row['email'],
             created_date=row['created_date'] if isinstance(row['created_date'], date)
@@ -317,12 +364,12 @@ class ConsignmentStorage:
         with self._get_connection() as conn:
             conn.execute("""
                 INSERT OR REPLACE INTO items
-                (item_id, consignor_id, name, description, original_price,
+                (item_id, account_id, name, description, original_price,
                  entry_date, status, status_date, modified_at, sync_status)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
             """, (
                 item.item_id,
-                item.consignor_id,
+                item.account_id,
                 item.name,
                 item.description,
                 item.original_price,
@@ -338,7 +385,7 @@ class ConsignmentStorage:
                 conn.execute("""
                     INSERT OR REPLACE INTO sales
                     (item_id, sale_date, original_price, sale_price, discount_percent,
-                     stocking_fee, consignor_share, store_share, modified_at, sync_status)
+                     stocking_fee, account_share, store_share, modified_at, sync_status)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
                 """, (
                     sale.item_id,
@@ -347,7 +394,7 @@ class ConsignmentStorage:
                     sale.sale_price,
                     sale.discount_percent,
                     sale.stocking_fee,
-                    sale.consignor_share,
+                    sale.account_share,
                     sale.store_share,
                     self._now()
                 ))
@@ -371,12 +418,12 @@ class ConsignmentStorage:
             rows = conn.execute("SELECT * FROM items").fetchall()
             return [self._row_to_item(row, conn) for row in rows]
 
-    def load_items_by_consignor(self, consignor_id: str) -> list[Item]:
-        """Load all items for a consignor."""
+    def load_items_by_account(self, account_id: str) -> list[Item]:
+        """Load all items for an account."""
         with self._get_connection() as conn:
             rows = conn.execute(
-                "SELECT * FROM items WHERE consignor_id = ?",
-                (consignor_id,)
+                "SELECT * FROM items WHERE account_id = ?",
+                (account_id,)
             ).fetchall()
             return [self._row_to_item(row, conn) for row in rows]
 
@@ -394,12 +441,12 @@ class ConsignmentStorage:
                 item_id=sale_row['item_id'],
                 sale_date=sale_row['sale_date'] if isinstance(sale_row['sale_date'], date)
                 else date.fromisoformat(sale_row['sale_date']),
-                original_price=Decimal(sale_row['original_price']),
-                sale_price=Decimal(sale_row['sale_price']),
+                original_price=safe_decimal(sale_row['original_price']),
+                sale_price=safe_decimal(sale_row['sale_price']),
                 discount_percent=sale_row['discount_percent'],
-                stocking_fee=Decimal(sale_row['stocking_fee']),
-                consignor_share=Decimal(sale_row['consignor_share']),
-                store_share=Decimal(sale_row['store_share'])
+                stocking_fee=safe_decimal(sale_row['stocking_fee']),
+                account_share=safe_decimal(sale_row['account_share']),
+                store_share=safe_decimal(sale_row['store_share'])
             )
 
         entry_date = row['entry_date']
@@ -412,10 +459,10 @@ class ConsignmentStorage:
 
         return Item(
             item_id=row['item_id'],
-            consignor_id=row['consignor_id'],
+            account_id=row['account_id'],
             name=row['name'],
             description=row['description'],
-            original_price=Decimal(row['original_price']),
+            original_price=safe_decimal(row['original_price']),
             entry_date=entry_date,
             status=ItemStatus(row['status']),
             sale_record=sale_record,
@@ -430,7 +477,7 @@ class ConsignmentStorage:
             conn.execute("""
                 INSERT OR REPLACE INTO sales
                 (item_id, sale_date, original_price, sale_price, discount_percent,
-                 stocking_fee, consignor_share, store_share, modified_at, sync_status)
+                 stocking_fee, account_share, store_share, modified_at, sync_status)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
             """, (
                 sale.item_id,
@@ -439,7 +486,7 @@ class ConsignmentStorage:
                 sale.sale_price,
                 sale.discount_percent,
                 sale.stocking_fee,
-                sale.consignor_share,
+                sale.account_share,
                 sale.store_share,
                 self._now()
             ))
@@ -451,12 +498,12 @@ class ConsignmentStorage:
         with self._get_connection() as conn:
             conn.execute("""
                 INSERT OR REPLACE INTO payouts
-                (payout_id, consignor_id, payout_date, amount, check_number,
+                (payout_id, account_id, payout_date, amount, check_number,
                  modified_at, sync_status)
                 VALUES (?, ?, ?, ?, ?, ?, 'pending')
             """, (
                 payout.payout_id,
-                payout.consignor_id,
+                payout.account_id,
                 payout.payout_date,
                 payout.amount,
                 payout.check_number,
@@ -469,12 +516,12 @@ class ConsignmentStorage:
             rows = conn.execute("SELECT * FROM payouts").fetchall()
             return [self._row_to_payout(row) for row in rows]
 
-    def load_payouts_by_consignor(self, consignor_id: str) -> list[Payout]:
-        """Load payouts for a consignor."""
+    def load_payouts_by_account(self, account_id: str) -> list[Payout]:
+        """Load payouts for an account."""
         with self._get_connection() as conn:
             rows = conn.execute(
-                "SELECT * FROM payouts WHERE consignor_id = ?",
-                (consignor_id,)
+                "SELECT * FROM payouts WHERE account_id = ?",
+                (account_id,)
             ).fetchall()
             return [self._row_to_payout(row) for row in rows]
 
@@ -486,9 +533,9 @@ class ConsignmentStorage:
 
         return Payout(
             payout_id=row['payout_id'],
-            consignor_id=row['consignor_id'],
+            account_id=row['account_id'],
             payout_date=payout_date,
-            amount=Decimal(row['amount']),
+            amount=safe_decimal(row['amount']),
             check_number=row['check_number']
         )
 
@@ -498,8 +545,8 @@ class ConsignmentStorage:
         """Save the entire store state to database."""
         self.save_store_config(store)
 
-        for consignor in store._consignors.values():
-            self.save_consignor(consignor)
+        for account in store._accounts.values():
+            self.save_account(account)
 
         for item in store._items.values():
             self.save_item(item)
@@ -520,16 +567,16 @@ class ConsignmentStorage:
         )
 
         # Restore ID counters
-        if 'consignor_counter' in config:
-            store._consignor_counter = itertools.count(int(config['consignor_counter']))
+        if 'account_counter' in config:
+            store._account_counter = itertools.count(int(config['account_counter']))
         if 'item_counter' in config:
             store._item_counter = itertools.count(int(config['item_counter']))
         if 'payout_counter' in config:
             store._payout_counter = itertools.count(int(config['payout_counter']))
 
         # Load all data
-        for consignor in self.load_all_consignors():
-            store._consignors[consignor.consignor_id] = consignor
+        for account in self.load_all_accounts():
+            store._accounts[account.account_id] = account
 
         for item in self.load_all_items():
             store._items[item.item_id] = item
@@ -544,7 +591,7 @@ class ConsignmentStorage:
         """Get all records with pending sync status."""
         changes = {
             'config': [],
-            'consignors': [],
+            'accounts': [],
             'items': [],
             'sales': [],
             'payouts': []
@@ -557,11 +604,11 @@ class ConsignmentStorage:
             ).fetchall()
             changes['config'] = [dict(row) for row in rows]
 
-            # Consignors
+            # Accounts
             rows = conn.execute(
-                "SELECT * FROM consignors WHERE sync_status = 'pending'"
+                "SELECT * FROM accounts WHERE sync_status = 'pending'"
             ).fetchall()
-            changes['consignors'] = [dict(row) for row in rows]
+            changes['accounts'] = [dict(row) for row in rows]
 
             # Items
             rows = conn.execute(
@@ -599,7 +646,7 @@ class ConsignmentStorage:
     def mark_all_synced(self):
         """Mark all pending records as synced."""
         with self._get_connection() as conn:
-            for table in ['store_config', 'consignors', 'items', 'sales', 'payouts']:
+            for table in ['store_config', 'accounts', 'items', 'sales', 'payouts']:
                 conn.execute(f"UPDATE {table} SET sync_status = 'synced'")
 
     def log_sync(self, sync_type: str, status: str,
@@ -655,7 +702,7 @@ class ConsignmentStorage:
             conn.execute("DELETE FROM sales")
             conn.execute("DELETE FROM payouts")
             conn.execute("DELETE FROM items")
-            conn.execute("DELETE FROM consignors")
+            conn.execute("DELETE FROM accounts")
             conn.execute("DELETE FROM store_config")
 
     def bulk_import(self, data: dict[str, list[dict]]):
@@ -665,7 +712,7 @@ class ConsignmentStorage:
         Expected format:
         {
             'config': [{'key': ..., 'value': ...}, ...],
-            'consignors': [...],
+            'accounts': [...],
             'items': [...],
             'sales': [...],
             'payouts': [...]
@@ -681,16 +728,16 @@ class ConsignmentStorage:
                     VALUES (?, ?, ?, 'synced')
                 """, (row['key'], row['value'], now))
 
-            # Consignors
-            for row in data.get('consignors', []):
+            # Accounts
+            for row in data.get('accounts', []):
                 conn.execute("""
-                    INSERT OR REPLACE INTO consignors
-                    (consignor_id, first_name, last_name, street, city, state, zip_code, phone, email,
+                    INSERT OR REPLACE INTO accounts
+                    (account_id, first_name, last_name, account_type, street, city, state, zip_code, phone, email,
                      split_percent, stocking_fee, balance, created_date, modified_at, sync_status)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced')
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced')
                 """, (
-                    row['consignor_id'], row['first_name'], row['last_name'], row['street'], row['city'],
-                    row['state'], row['zip_code'], row.get('phone'), row.get('email'),
+                    row['account_id'], row['first_name'], row['last_name'], row.get('account_type', 'consignment'),
+                    row['street'], row['city'], row['state'], row['zip_code'], row.get('phone'), row.get('email'),
                     row['split_percent'], row['stocking_fee'], row['balance'],
                     row['created_date'], now
                 ))
@@ -699,11 +746,11 @@ class ConsignmentStorage:
             for row in data.get('items', []):
                 conn.execute("""
                     INSERT OR REPLACE INTO items
-                    (item_id, consignor_id, name, description, original_price,
+                    (item_id, account_id, name, description, original_price,
                      entry_date, status, status_date, modified_at, sync_status)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced')
                 """, (
-                    row['item_id'], row['consignor_id'], row['name'], row['description'],
+                    row['item_id'], row['account_id'], row['name'], row['description'],
                     row['original_price'], row['entry_date'], row['status'],
                     row['status_date'], now
                 ))
@@ -713,22 +760,22 @@ class ConsignmentStorage:
                 conn.execute("""
                     INSERT OR REPLACE INTO sales
                     (item_id, sale_date, original_price, sale_price, discount_percent,
-                     stocking_fee, consignor_share, store_share, modified_at, sync_status)
+                     stocking_fee, account_share, store_share, modified_at, sync_status)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced')
                 """, (
                     row['item_id'], row['sale_date'], row['original_price'],
                     row['sale_price'], row['discount_percent'], row['stocking_fee'],
-                    row['consignor_share'], row['store_share'], now
+                    row['account_share'], row['store_share'], now
                 ))
 
             # Payouts
             for row in data.get('payouts', []):
                 conn.execute("""
                     INSERT OR REPLACE INTO payouts
-                    (payout_id, consignor_id, payout_date, amount, check_number,
+                    (payout_id, account_id, payout_date, amount, check_number,
                      modified_at, sync_status)
                     VALUES (?, ?, ?, ?, ?, ?, 'synced')
                 """, (
-                    row['payout_id'], row['consignor_id'], row['payout_date'],
+                    row['payout_id'], row['account_id'], row['payout_date'],
                     row['amount'], row.get('check_number'), now
                 ))

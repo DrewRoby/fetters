@@ -2,7 +2,7 @@
 Consignment Shop Management - Desktop GUI
 
 A simple, clean Tkinter interface for managing consignment inventory,
-consignors, sales, and payouts.
+accounts, sales, and payouts.
 """
 
 import tkinter as tk
@@ -12,7 +12,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Optional, Callable
 
 from core import (
-    ItemStatus, Address, Item, Consignor, ConsignmentStore
+    ItemStatus, Address, Item, Account, ConsignmentStore
 )
 from storage import ConsignmentStorage
 
@@ -41,12 +41,12 @@ class App(tk.Tk):
         
         # Create tab frames
         self.items_tab = ItemsTab(self.notebook, self)
-        self.consignors_tab = ConsignorsTab(self.notebook, self)
+        self.accounts_tab = AccountsTab(self.notebook, self)
         self.sales_tab = SalesTab(self.notebook, self)
         self.payouts_tab = PayoutsTab(self.notebook, self)
         
         self.notebook.add(self.items_tab, text="  Items  ")
-        self.notebook.add(self.consignors_tab, text="  Consignors  ")
+        self.notebook.add(self.accounts_tab, text="  Accounts  ")
         self.notebook.add(self.sales_tab, text="  Sales  ")
         self.notebook.add(self.payouts_tab, text="  Payouts  ")
         
@@ -81,7 +81,7 @@ class App(tk.Tk):
     def refresh_all(self):
         """Refresh all tabs."""
         self.items_tab.refresh()
-        self.consignors_tab.refresh()
+        self.accounts_tab.refresh()
         self.sales_tab.refresh()
         self.payouts_tab.refresh()
     
@@ -155,7 +155,6 @@ class FormDialog(tk.Toplevel):
         super().__init__(parent)
         self.title(title)
         self.transient(parent)
-        self.grab_set()
         
         self.result = None
         
@@ -179,6 +178,18 @@ class FormDialog(tk.Toplevel):
         
         self.bind("<Return>", lambda e: self.ok())
         self.bind("<Escape>", lambda e: self.cancel())
+        
+        # Grab focus after window is fully constructed
+        # Use after_idle to ensure window is viewable
+        self.after_idle(self._grab_focus)
+    
+    def _grab_focus(self):
+        """Grab focus after window is ready."""
+        try:
+            self.grab_set()
+        except tk.TclError:
+            # If grab fails, just continue without it
+            pass
     
     def ok(self):
         """Override in subclass to validate and set self.result."""
@@ -201,10 +212,10 @@ class FormDialog(tk.Toplevel):
         ttk.Label(self.form_frame, text=value, font=("TkDefaultFont", 9, "bold")).grid(row=row, column=1, sticky="w", pady=3)
 
 
-# --- Consignors Tab ---
+# --- Accounts Tab ---
 
-class ConsignorsTab(ttk.Frame):
-    """Manage consignors."""
+class AccountsTab(ttk.Frame):
+    """Manage accounts."""
     
     def __init__(self, parent, app: App):
         super().__init__(parent, padding="10")
@@ -217,7 +228,8 @@ class ConsignorsTab(ttk.Frame):
         toolbar = ttk.Frame(self)
         toolbar.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         
-        ttk.Button(toolbar, text="+ Add Consignor", command=self.add_consignor).pack(side="left")
+        ttk.Button(toolbar, text="+ Add Account", command=self.add_account).pack(side="left")
+        ttk.Button(toolbar, text="View", command=self.view_account).pack(side="left", padx=(10, 0))
         
         # List
         columns = [
@@ -230,14 +242,14 @@ class ConsignorsTab(ttk.Frame):
         ]
         self.list = ScrollableTreeview(self, columns)
         self.list.grid(row=1, column=0, sticky="nsew")
-        self.list.bind_double_click(lambda e: self.view_consignor())
+        self.list.bind_double_click(lambda e: self.view_account())
     
     def refresh(self):
-        """Reload consignor list."""
+        """Reload account list."""
         self.list.clear()
-        for c in self.app.store.list_consignors():
+        for c in self.app.store.list_accounts():
             self.list.insert((
-                c.consignor_id,
+                c.account_id,
                 c.full_name,
                 c.phone or "",
                 f"${c.balance:.2f}",
@@ -245,52 +257,52 @@ class ConsignorsTab(ttk.Frame):
                 f"${c.stocking_fee:.2f}"
             ))
     
-    def add_consignor(self):
-        dialog = ConsignorDialog(self, self.app.store)
+    def add_account(self):
+        dialog = AccountDialog(self, self.app.store)
         self.wait_window(dialog)
         if dialog.result:
             self.app.save()
             self.refresh()
-            self.app.set_status(f"Added consignor: {dialog.result.full_name}")
+            self.app.set_status(f"Added account: {dialog.result.full_name}")
     
-    def view_consignor(self):
-        """Open consignor detail window."""
+    def view_account(self):
+        """Open account detail window."""
         selected = self.list.get_selected()
         if not selected:
-            messagebox.showwarning("No Selection", "Please select a consignor.")
+            messagebox.showwarning("No Selection", "Please select an account.")
             return
         
-        consignor_id = selected[0]
-        consignor = self.app.store.get_consignor(consignor_id)
-        if consignor:
+        account_id = selected[0]
+        account = self.app.store.get_account(account_id)
+        if account:
             # Create a non-modal detail window
-            detail_window = ConsignorDetailWindow(self.app, consignor)
+            detail_window = AccountDetailWindow(self.app, account)
 
 
-class ConsignorDialog(FormDialog):
-    """Add/Edit consignor dialog."""
+class AccountDialog(FormDialog):
+    """Add/Edit account dialog."""
     
-    def __init__(self, parent, store: ConsignmentStore, consignor: Consignor = None):
-        super().__init__(parent, "Edit Consignor" if consignor else "Add Consignor")
+    def __init__(self, parent, store: ConsignmentStore, account: Account = None):
+        super().__init__(parent, "Edit Account" if account else "Add Account")
         self.store = store
-        self.consignor = consignor
+        self.account = account
         
         # Variables
-        self.first_name_var = tk.StringVar(value=consignor.first_name if consignor else "")
-        self.last_name_var = tk.StringVar(value=consignor.last_name if consignor else "")
-        self.phone_var = tk.StringVar(value=consignor.phone or "" if consignor else "")
-        self.email_var = tk.StringVar(value=consignor.email or "" if consignor else "")
-        self.street_var = tk.StringVar(value=consignor.address.street if consignor else "")
-        self.city_var = tk.StringVar(value=consignor.address.city if consignor else "")
-        self.state_var = tk.StringVar(value=consignor.address.state if consignor else "")
-        self.zip_var = tk.StringVar(value=consignor.address.zip_code if consignor else "")
-        self.split_var = tk.StringVar(value=str(consignor.split_percent) if consignor else str(store.default_split))
-        self.fee_var = tk.StringVar(value=str(consignor.stocking_fee) if consignor else str(store.default_stocking_fee))
+        self.first_name_var = tk.StringVar(value=account.first_name if account else "")
+        self.last_name_var = tk.StringVar(value=account.last_name if account else "")
+        self.phone_var = tk.StringVar(value=account.phone or "" if account else "")
+        self.email_var = tk.StringVar(value=account.email or "" if account else "")
+        self.street_var = tk.StringVar(value=account.address.street if account else "")
+        self.city_var = tk.StringVar(value=account.address.city if account else "")
+        self.state_var = tk.StringVar(value=account.address.state if account else "")
+        self.zip_var = tk.StringVar(value=account.address.zip_code if account else "")
+        self.split_var = tk.StringVar(value=str(account.split_percent) if account else str(store.default_split))
+        self.fee_var = tk.StringVar(value=str(account.stocking_fee) if account else str(store.default_stocking_fee))
         
         # Show ID if editing
         row = 0
-        if consignor:
-            self.add_readonly_field("ID:", consignor.consignor_id, row)
+        if account:
+            self.add_readonly_field("ID:", account.account_id, row)
             row += 1
         
         # Fields
@@ -336,19 +348,19 @@ class ConsignorDialog(FormDialog):
             zip_code=self.zip_var.get().strip() or "N/A"
         )
         
-        if self.consignor:
+        if self.account:
             # Update existing
-            self.consignor.first_name = first_name
-            self.consignor.last_name = last_name
-            self.consignor.phone = self.phone_var.get().strip() or None
-            self.consignor.email = self.email_var.get().strip() or None
-            self.consignor.address = address
-            self.consignor.split_percent = split
-            self.consignor.stocking_fee = fee
-            self.result = self.consignor
+            self.account.first_name = first_name
+            self.account.last_name = last_name
+            self.account.phone = self.phone_var.get().strip() or None
+            self.account.email = self.email_var.get().strip() or None
+            self.account.address = address
+            self.account.split_percent = split
+            self.account.stocking_fee = fee
+            self.result = self.account
         else:
             # Create new
-            self.result = self.store.add_consignor(
+            self.result = self.store.add_account(
                 first_name=first_name,
                 last_name=last_name,
                 address=address,
@@ -361,15 +373,15 @@ class ConsignorDialog(FormDialog):
         self.destroy()
 
 
-class ConsignorDetailWindow(tk.Toplevel):
-    """Detail window showing consignor info and their items."""
+class AccountDetailWindow(tk.Toplevel):
+    """Detail window showing account info and their items."""
     
-    def __init__(self, app: App, consignor: Consignor):
+    def __init__(self, app: App, account: Account):
         super().__init__(app)
         self.app = app
-        self.consignor = consignor
+        self.account = account
         
-        self.title(f"Consignor: {consignor.full_name}")
+        self.title(f"Account: {account.full_name}")
         self.geometry("900x650")
         
         # Make it stay on top initially but not modal
@@ -379,7 +391,7 @@ class ConsignorDetailWindow(tk.Toplevel):
         self.rowconfigure(2, weight=1)
         
         # --- Info Section ---
-        info_frame = ttk.LabelFrame(self, text="Consignor Information", padding="10")
+        info_frame = ttk.LabelFrame(self, text="Account Information", padding="10")
         info_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
         
         # Left column
@@ -387,50 +399,54 @@ class ConsignorDetailWindow(tk.Toplevel):
         left_frame.grid(row=0, column=0, sticky="w", padx=(0, 30))
         
         ttk.Label(left_frame, text="Name:", font=("TkDefaultFont", 9, "bold")).grid(row=0, column=0, sticky="w")
-        ttk.Label(left_frame, text=consignor.full_name).grid(row=0, column=1, sticky="w", padx=(10, 0))
+        ttk.Label(left_frame, text=account.full_name).grid(row=0, column=1, sticky="w", padx=(10, 0))
         
         ttk.Label(left_frame, text="ID:", font=("TkDefaultFont", 9, "bold")).grid(row=1, column=0, sticky="w", pady=(5, 0))
-        ttk.Label(left_frame, text=consignor.consignor_id).grid(row=1, column=1, sticky="w", padx=(10, 0), pady=(5, 0))
+        ttk.Label(left_frame, text=account.account_id).grid(row=1, column=1, sticky="w", padx=(10, 0), pady=(5, 0))
         
         # Middle column
         mid_frame = ttk.Frame(info_frame)
         mid_frame.grid(row=0, column=1, sticky="w", padx=(0, 30))
         
         ttk.Label(mid_frame, text="Phone:", font=("TkDefaultFont", 9, "bold")).grid(row=0, column=0, sticky="w")
-        ttk.Label(mid_frame, text=consignor.phone or "N/A").grid(row=0, column=1, sticky="w", padx=(10, 0))
+        ttk.Label(mid_frame, text=account.phone or "N/A").grid(row=0, column=1, sticky="w", padx=(10, 0))
         
         ttk.Label(mid_frame, text="Email:", font=("TkDefaultFont", 9, "bold")).grid(row=1, column=0, sticky="w", pady=(5, 0))
-        ttk.Label(mid_frame, text=consignor.email or "N/A").grid(row=1, column=1, sticky="w", padx=(10, 0), pady=(5, 0))
+        ttk.Label(mid_frame, text=account.email or "N/A").grid(row=1, column=1, sticky="w", padx=(10, 0), pady=(5, 0))
         
         # Right column
         right_frame = ttk.Frame(info_frame)
         right_frame.grid(row=0, column=2, sticky="w")
         
         ttk.Label(right_frame, text="Balance:", font=("TkDefaultFont", 9, "bold")).grid(row=0, column=0, sticky="w")
-        ttk.Label(right_frame, text=f"${consignor.balance:.2f}", font=("TkDefaultFont", 10)).grid(row=0, column=1, sticky="w", padx=(10, 0))
+        ttk.Label(right_frame, text=f"${account.balance:.2f}", font=("TkDefaultFont", 10)).grid(row=0, column=1, sticky="w", padx=(10, 0))
         
         ttk.Label(right_frame, text="Split:", font=("TkDefaultFont", 9, "bold")).grid(row=1, column=0, sticky="w", pady=(5, 0))
-        ttk.Label(right_frame, text=f"{consignor.split_percent}% / ${consignor.stocking_fee:.2f} fee").grid(row=1, column=1, sticky="w", padx=(10, 0), pady=(5, 0))
+        ttk.Label(right_frame, text=f"{account.split_percent}% / ${account.stocking_fee:.2f} fee").grid(row=1, column=1, sticky="w", padx=(10, 0), pady=(5, 0))
         
         # Edit button
-        ttk.Button(info_frame, text="Edit Info", command=self.edit_consignor).grid(row=0, column=3, sticky="e", padx=(20, 0))
+        ttk.Button(info_frame, text="Edit Info", command=self.edit_account).grid(row=0, column=3, sticky="e", padx=(20, 0))
         
         # --- Items Section ---
         items_frame = ttk.LabelFrame(self, text="Items", padding="10")
         items_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=5)
         
-        # Toolbar with filter
+        # Toolbar with filter and action buttons
         toolbar = ttk.Frame(items_frame)
         toolbar.pack(fill="x", pady=(0, 10))
         
-        ttk.Label(toolbar, text="Show:").pack(side="left", padx=(0, 5))
+        # Left side - Add Item button
+        ttk.Button(toolbar, text="+ Add Item", command=self.add_item).pack(side="left")
+        
+        # Filter in the middle
+        ttk.Label(toolbar, text="    Show:").pack(side="left", padx=(20, 5))
         self.filter_var = tk.StringVar(value="active")
         filter_combo = ttk.Combobox(toolbar, textvariable=self.filter_var, state="readonly", width=12)
         filter_combo["values"] = ("active", "sold", "returned", "expired", "all")
         filter_combo.pack(side="left")
         filter_combo.bind("<<ComboboxSelected>>", lambda e: self.refresh_items())
         
-        # Action buttons
+        # Action buttons on the right
         ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=10)
         ttk.Button(toolbar, text="Sell Item", command=self.sell_item).pack(side="left", padx=(0, 5))
         ttk.Button(toolbar, text="Return Item", command=self.return_item).pack(side="left", padx=(0, 5))
@@ -455,12 +471,12 @@ class ConsignorDetailWindow(tk.Toplevel):
         self.refresh_items()
     
     def refresh_items(self):
-        """Reload items list for this consignor."""
+        """Reload items list for this account."""
         self.items_list.clear()
         filter_status = self.filter_var.get()
         
-        # Get items for this consignor, sorted by entry date
-        items = self.app.store.get_items_by_consignor(self.consignor.consignor_id)
+        # Get items for this account, sorted by entry date
+        items = self.app.store.get_items_by_account(self.account.account_id)
         items.sort(key=lambda x: x.entry_date)
         
         for item in items:
@@ -490,20 +506,27 @@ class ConsignorDetailWindow(tk.Toplevel):
                 item.price_tier_description(),
                 str(item.entry_date)
             ), tags=tags)
-        
-        # Update balance display (it may have changed)
-        # We could add a method to update just the balance, but for now this is fine
     
-    def edit_consignor(self):
-        """Open edit dialog for this consignor."""
-        dialog = ConsignorDialog(self, self.app.store, self.consignor)
+    def edit_account(self):
+        """Open edit dialog for this account."""
+        dialog = AccountDialog(self, self.app.store, self.account)
         self.wait_window(dialog)
         if dialog.result:
             self.app.save()
             self.app.refresh_all()
             # Update window title
-            self.title(f"Consignor: {self.consignor.full_name}")
-            self.app.set_status(f"Updated consignor: {self.consignor.full_name}")
+            self.title(f"Account: {self.account.full_name}")
+            self.app.set_status(f"Updated account: {self.account.full_name}")
+    
+    def add_item(self):
+        """Add an item for this account."""
+        dialog = ItemDialog(self, self.app.store, preselect_account_id=self.account.account_id)
+        self.wait_window(dialog)
+        if dialog.result:
+            self.app.save()
+            self.refresh_items()
+            self.app.refresh_all()
+            self.app.set_status(f"Added item: {dialog.result.name} ({dialog.result.item_id})")
     
     def sell_item(self):
         """Sell selected item."""
@@ -525,7 +548,7 @@ class ConsignorDetailWindow(tk.Toplevel):
         
         if messagebox.askyesno("Confirm Sale", 
             f"Sell '{item.name}' for ${current_price:.2f}?\n\n"
-            f"Consignor: {self.consignor.full_name}\n"
+            f"Account: {self.account.full_name}\n"
             f"Discount: {item.price_tier_description()}"
         ):
             sale = self.app.store.sell_item(item.item_id)
@@ -534,11 +557,11 @@ class ConsignorDetailWindow(tk.Toplevel):
             self.app.refresh_all()
             self.app.set_status(
                 f"SOLD: {item.name} for ${sale.sale_price:.2f} "
-                f"(Consignor gets ${sale.consignor_share:.2f})"
+                f"(Account gets ${sale.account_share:.2f})"
             )
     
     def return_item(self):
-        """Return selected item to consignor."""
+        """Return selected item to account."""
         selected = self.items_list.get_selected()
         if not selected:
             messagebox.showwarning("No Selection", "Please select an item.")
@@ -554,13 +577,13 @@ class ConsignorDetailWindow(tk.Toplevel):
             return
         
         if messagebox.askyesno("Confirm Return", 
-            f"Return '{item.name}' to consignor?"
+            f"Return '{item.name}' to account?"
         ):
-            self.app.store.return_item_to_consignor(item.item_id)
+            self.app.store.return_item_to_account(item.item_id)
             self.app.save()
             self.refresh_items()
             self.app.refresh_all()
-            self.app.set_status(f"Returned to consignor: {item.name}")
+            self.app.set_status(f"Returned to account: {item.name}")
 
 
 # --- Items Tab ---
@@ -582,7 +605,7 @@ class ItemsTab(ttk.Frame):
         ttk.Button(toolbar, text="+ Add Item", command=self.add_item).pack(side="left")
         ttk.Button(toolbar, text="View/Edit", command=self.view_item).pack(side="left", padx=(10, 0))
         ttk.Button(toolbar, text="Sell Item", command=self.sell_item).pack(side="left", padx=(10, 0))
-        ttk.Button(toolbar, text="Return to Consignor", command=self.return_item).pack(side="left", padx=(10, 0))
+        ttk.Button(toolbar, text="Return to Account", command=self.return_item).pack(side="left", padx=(10, 0))
         
         # Filter
         ttk.Label(toolbar, text="    Show:").pack(side="left", padx=(20, 5))
@@ -603,7 +626,7 @@ class ItemsTab(ttk.Frame):
         columns = [
             ("id", "Item ID", 90),
             ("name", "Name", 200),
-            ("consignor", "Consignor", 150),
+            ("account", "Account", 150),
             ("original", "Original $", 90),
             ("current", "Current $", 90),
             ("status", "Status", 100),
@@ -633,8 +656,8 @@ class ItemsTab(ttk.Frame):
             elif filter_status == "expired" and item.status != ItemStatus.EXPIRED:
                 continue
             
-            consignor = self.app.store.get_consignor(item.consignor_id)
-            consignor_name = consignor.full_name if consignor else "Unknown"
+            account = self.app.store.get_account(item.account_id)
+            account_name = account.full_name if account else "Unknown"
             
             # Determine row tag
             tags = ()
@@ -647,7 +670,7 @@ class ItemsTab(ttk.Frame):
             self.list.insert((
                 item.item_id,
                 item.name,
-                consignor_name,
+                account_name,
                 f"${item.original_price:.2f}",
                 f"${item.current_price():.2f}",
                 item.price_tier_description(),
@@ -673,8 +696,8 @@ class ItemsTab(ttk.Frame):
         self.lookup_var.set("")
     
     def add_item(self):
-        if not self.app.store.list_consignors():
-            messagebox.showwarning("No Consignors", "Please add a consignor first.")
+        if not self.app.store.list_accounts():
+            messagebox.showwarning("No Accounts", "Please add an account first.")
             return
         
         dialog = ItemDialog(self, self.app.store)
@@ -717,12 +740,12 @@ class ItemsTab(ttk.Frame):
             return
         
         # Confirm sale
-        consignor = self.app.store.get_consignor(item.consignor_id)
+        account = self.app.store.get_account(item.account_id)
         current_price = item.current_price()
         
         if messagebox.askyesno("Confirm Sale", 
             f"Sell '{item.name}' for ${current_price:.2f}?\n\n"
-            f"Consignor: {consignor.full_name if consignor else 'Unknown'}\n"
+            f"Account: {account.full_name if account else 'Unknown'}\n"
             f"Discount: {item.price_tier_description()}"
         ):
             sale = self.app.store.sell_item(item.item_id)
@@ -730,7 +753,7 @@ class ItemsTab(ttk.Frame):
             self.refresh()
             self.app.set_status(
                 f"SOLD: {item.name} for ${sale.sale_price:.2f} "
-                f"(Consignor gets ${sale.consignor_share:.2f})"
+                f"(Account gets ${sale.account_share:.2f})"
             )
     
     def return_item(self):
@@ -748,35 +771,44 @@ class ItemsTab(ttk.Frame):
             return
         
         if messagebox.askyesno("Confirm Return", 
-            f"Return '{item.name}' to consignor?"
+            f"Return '{item.name}' to account?"
         ):
-            self.app.store.return_item_to_consignor(item.item_id)
+            self.app.store.return_item_to_account(item.item_id)
             self.app.save()
             self.refresh()
-            self.app.set_status(f"Returned to consignor: {item.name}")
+            self.app.set_status(f"Returned to account: {item.name}")
 
 
 class ItemDialog(FormDialog):
     """Add new item dialog."""
     
-    def __init__(self, parent, store: ConsignmentStore):
+    def __init__(self, parent, store: ConsignmentStore, preselect_account_id: str = None):
         super().__init__(parent, "Add Item")
         self.store = store
+        self.preselect_account_id = preselect_account_id
         
         # Variables
-        self.consignor_var = tk.StringVar()
+        self.account_var = tk.StringVar()
         self.name_var = tk.StringVar()
         self.desc_var = tk.StringVar()
         self.price_var = tk.StringVar()
         
-        # Consignor dropdown
-        ttk.Label(self.form_frame, text="Consignor:").grid(row=0, column=0, sticky="e", padx=(0, 10), pady=3)
-        self.consignor_combo = ttk.Combobox(self.form_frame, textvariable=self.consignor_var, state="readonly", width=30)
-        self.consignors = {f"{c.consignor_id} - {c.full_name}": c.consignor_id for c in store.list_consignors()}
-        self.consignor_combo["values"] = list(self.consignors.keys())
-        if self.consignors:
-            self.consignor_combo.current(0)
-        self.consignor_combo.grid(row=0, column=1, sticky="w", pady=3)
+        # Account dropdown
+        ttk.Label(self.form_frame, text="Account:").grid(row=0, column=0, sticky="e", padx=(0, 10), pady=3)
+        self.account_combo = ttk.Combobox(self.form_frame, textvariable=self.account_var, state="readonly", width=30)
+        self.accounts = {f"{c.account_id} - {c.full_name}": c.account_id for c in store.list_accounts()}
+        self.account_combo["values"] = list(self.accounts.keys())
+        
+        # Pre-select if provided
+        if preselect_account_id:
+            for key, value in self.accounts.items():
+                if value == preselect_account_id:
+                    self.account_combo.set(key)
+                    break
+        elif self.accounts:
+            self.account_combo.current(0)
+        
+        self.account_combo.grid(row=0, column=1, sticky="w", pady=3)
         
         self.name_entry = self.add_field("Item Name:", self.name_var, 1)
         self.add_field("Description:", self.desc_var, 2, width=40)
@@ -793,20 +825,24 @@ class ItemDialog(FormDialog):
         try:
             price = Decimal(self.price_var.get())
             if price <= 0:
-                raise ValueError()
+                raise ValueError("Price must be positive")
+            # Sanity check: max price of $100,000 (adjust as needed for your store)
+            if price > Decimal("100000.00"):
+                messagebox.showerror("Error", "Price cannot exceed $100,000.00")
+                return
         except (InvalidOperation, ValueError):
-            messagebox.showerror("Error", "Please enter a valid price.")
+            messagebox.showerror("Error", "Please enter a valid price (maximum $100,000).")
             return
         
-        consignor_key = self.consignor_var.get()
-        if not consignor_key or consignor_key not in self.consignors:
-            messagebox.showerror("Error", "Please select a consignor.")
+        account_key = self.account_var.get()
+        if not account_key or account_key not in self.accounts:
+            messagebox.showerror("Error", "Please select an account.")
             return
         
-        consignor_id = self.consignors[consignor_key]
+        account_id = self.accounts[account_key]
         
         self.result = self.store.add_item(
-            consignor_id=consignor_id,
+            account_id=account_id,
             name=name,
             description=self.desc_var.get().strip(),
             price=price
@@ -824,14 +860,14 @@ class ItemViewDialog(FormDialog):
         self.item = item
         self.changed = False
         
-        consignor = store.get_consignor(item.consignor_id)
+        account = store.get_account(item.account_id)
         
         # Item info
         self.add_readonly_field("Item ID:", item.item_id, 0)
         self.add_readonly_field("Name:", item.name, 1)
         self.add_readonly_field("Description:", item.description or "(none)", 2)
-        self.add_readonly_field("Consignor:", 
-                                f"{consignor.full_name} ({item.consignor_id})" if consignor else "Unknown", 3)
+        self.add_readonly_field("Account:", 
+                                f"{account.full_name} ({item.account_id})" if account else "Unknown", 3)
         
         ttk.Separator(self.form_frame, orient="horizontal").grid(row=4, column=0, columnspan=2, sticky="ew", pady=10)
         
@@ -846,7 +882,7 @@ class ItemViewDialog(FormDialog):
             ttk.Separator(self.form_frame, orient="horizontal").grid(row=10, column=0, columnspan=2, sticky="ew", pady=10)
             self.add_readonly_field("Sale Date:", str(item.sale_record.sale_date), 11)
             self.add_readonly_field("Sale Price:", f"${item.sale_record.sale_price:.2f}", 12)
-            self.add_readonly_field("Consignor Share:", f"${item.sale_record.consignor_share:.2f}", 13)
+            self.add_readonly_field("Account Share:", f"${item.sale_record.account_share:.2f}", 13)
             self.add_readonly_field("Store Share:", f"${item.sale_record.store_share:.2f}", 14)
     
     def ok(self):
@@ -881,11 +917,11 @@ class SalesTab(ttk.Frame):
         columns = [
             ("item_id", "Item ID", 90),
             ("name", "Item Name", 180),
-            ("consignor", "Consignor", 150),
+            ("account", "Account", 150),
             ("sale_date", "Sale Date", 100),
             ("original", "Original", 80),
             ("sale_price", "Sale Price", 90),
-            ("consignor_share", "To Consignor", 100),
+            ("account_share", "To Account", 100),
             ("store_share", "To Store", 90),
         ]
         self.list = ScrollableTreeview(self, columns)
@@ -899,32 +935,32 @@ class SalesTab(ttk.Frame):
         """Reload sales list."""
         self.list.clear()
         total_sales = Decimal("0")
-        total_consignor = Decimal("0")
+        total_account = Decimal("0")
         total_store = Decimal("0")
         
         for item in self.app.store._items.values():
             if item.sale_record:
                 sale = item.sale_record
-                consignor = self.app.store.get_consignor(item.consignor_id)
+                account = self.app.store.get_account(item.account_id)
                 
                 self.list.insert((
                     item.item_id,
                     item.name,
-                    consignor.full_name if consignor else "Unknown",
+                    account.full_name if account else "Unknown",
                     str(sale.sale_date),
                     f"${sale.original_price:.2f}",
                     f"${sale.sale_price:.2f}",
-                    f"${sale.consignor_share:.2f}",
+                    f"${sale.account_share:.2f}",
                     f"${sale.store_share:.2f}",
                 ))
                 
                 total_sales += sale.sale_price
-                total_consignor += sale.consignor_share
+                total_account += sale.account_share
                 total_store += sale.store_share
         
         self.totals_var.set(
             f"Total Sales: ${total_sales:.2f}  |  "
-            f"To Consignors: ${total_consignor:.2f}  |  "
+            f"To Accounts: ${total_account:.2f}  |  "
             f"To Store: ${total_store:.2f}"
         )
     
@@ -949,12 +985,12 @@ class SalesTab(ttk.Frame):
             self.quick_sell_var.set("")
             return
         
-        consignor = self.app.store.get_consignor(item.consignor_id)
+        account = self.app.store.get_account(item.account_id)
         current_price = item.current_price()
         
         if messagebox.askyesno("Confirm Sale",
             f"Sell '{item.name}' for ${current_price:.2f}?\n\n"
-            f"Consignor: {consignor.full_name if consignor else 'Unknown'}"
+            f"Account: {account.full_name if account else 'Unknown'}"
         ):
             sale = self.app.store.sell_item(item.item_id)
             self.app.save()
@@ -967,7 +1003,7 @@ class SalesTab(ttk.Frame):
 # --- Payouts Tab ---
 
 class PayoutsTab(ttk.Frame):
-    """Manage consignor payouts."""
+    """Manage account payouts."""
     
     def __init__(self, parent, app: App):
         super().__init__(parent, padding="10")
@@ -982,7 +1018,7 @@ class PayoutsTab(ttk.Frame):
         
         balance_columns = [
             ("id", "ID", 80),
-            ("name", "Consignor", 200),
+            ("name", "Account", 200),
             ("balance", "Balance Due", 120),
         ]
         self.balance_list = ScrollableTreeview(self, balance_columns, height=8)
@@ -998,7 +1034,7 @@ class PayoutsTab(ttk.Frame):
         
         history_columns = [
             ("id", "Payout ID", 90),
-            ("consignor", "Consignor", 180),
+            ("account", "Account", 180),
             ("date", "Date", 100),
             ("amount", "Amount", 100),
             ("check", "Check #", 100),
@@ -1010,10 +1046,10 @@ class PayoutsTab(ttk.Frame):
         """Reload payout info."""
         # Balances
         self.balance_list.clear()
-        for c in self.app.store.list_consignors():
+        for c in self.app.store.list_accounts():
             if c.balance > 0:
                 self.balance_list.insert((
-                    c.consignor_id,
+                    c.account_id,
                     c.full_name,
                     f"${c.balance:.2f}"
                 ))
@@ -1021,10 +1057,10 @@ class PayoutsTab(ttk.Frame):
         # History
         self.history_list.clear()
         for p in self.app.store._payouts:
-            consignor = self.app.store.get_consignor(p.consignor_id)
+            account = self.app.store.get_account(p.account_id)
             self.history_list.insert((
                 p.payout_id,
-                consignor.full_name if consignor else "Unknown",
+                account.full_name if account else "Unknown",
                 str(p.payout_date),
                 f"${p.amount:.2f}",
                 p.check_number or ""
@@ -1033,30 +1069,30 @@ class PayoutsTab(ttk.Frame):
     def process_payout(self):
         selected = self.balance_list.get_selected()
         if not selected:
-            messagebox.showwarning("No Selection", "Please select a consignor to pay.")
+            messagebox.showwarning("No Selection", "Please select an account to pay.")
             return
         
-        consignor_id = selected[0]
-        consignor = self.app.store.get_consignor(consignor_id)
-        if not consignor or consignor.balance <= 0:
-            messagebox.showinfo("No Balance", "This consignor has no balance due.")
+        account_id = selected[0]
+        account = self.app.store.get_account(account_id)
+        if not account or account.balance <= 0:
+            messagebox.showinfo("No Balance", "This account has no balance due.")
             return
         
         # Get check number
         check_num = simpledialog.askstring(
             "Check Number",
-            f"Paying ${consignor.balance:.2f} to {consignor.full_name}\n\nEnter check number (optional):",
+            f"Paying ${account.balance:.2f} to {account.full_name}\n\nEnter check number (optional):",
             parent=self
         )
         
         if check_num is None:  # Cancelled
             return
         
-        payout = self.app.store.process_payout(consignor_id, check_number=check_num or None)
+        payout = self.app.store.process_payout(account_id, check_number=check_num or None)
         if payout:
             self.app.save()
             self.refresh()
-            self.app.set_status(f"Payout processed: ${payout.amount:.2f} to {consignor.full_name}")
+            self.app.set_status(f"Payout processed: ${payout.amount:.2f} to {account.full_name}")
 
 
 # --- Main Entry Point ---
